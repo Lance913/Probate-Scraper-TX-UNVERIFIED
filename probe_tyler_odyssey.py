@@ -66,8 +66,21 @@ WINDOW_START = TODAY - timedelta(days=730)  # wide window for a first pass -- ju
 TARRANT_URL = "https://odyssey.tarrantcounty.com/PublicAccess/default.aspx"
 DENTON_URL = "https://justice1.dentoncounty.gov/PublicAccess/"
 JOHNSON_CANDIDATES = {
-    "district_clerk": "https://pa.johnsoncountytx.org/DistrictClerkPA/Login.aspx",
-    "county_clerk":   "https://pa.johnsoncountytx.org/CountyClerkPA/Login.aspx",
+    # NEW top candidate (added after WebSearch found it independently indexed
+    # by Google, AND a third-party PDF filename referencing a real CaseDetail.
+    # aspx?CaseID=... pulled from it) -- pa.johnsoncountytx.org's old
+    # self-hosted domain connection-resets on EVERY path we've tried (3
+    # separate attempts across 2 probe runs), which smells like the same
+    # "old domain decommissioned/broken, real portal moved to Tyler's cloud
+    # hosting" pattern already confirmed for BOTH Tarrant (odyssey.
+    # tarrantcounty.com -> portal-txtarrant.tylertech.cloud) and Collin
+    # (cijspub.co.collin.tx.us -> portal-txcollin.tylertech.cloud). If this
+    # resolves the same way, "DistrictClerkPA vs CountyClerkPA" may be moot --
+    # the live portal might just be the standard generic /PublicAccess/ path,
+    # same shape as Tarrant/Denton, at Johnson's own tylertech.cloud subdomain.
+    "tylertech_cloud":  "https://portal-txjohnson.tylertech.cloud/PublicAccess/default.aspx",
+    "district_clerk":   "https://pa.johnsoncountytx.org/DistrictClerkPA/Login.aspx",
+    "county_clerk":     "https://pa.johnsoncountytx.org/CountyClerkPA/Login.aspx",
 }
 
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -470,6 +483,7 @@ def phase4_johnson(pw):
     # specific one. Also try the bare domain root.
     import requests as _requests
     raw_targets = {
+        'tylertech_cloud': JOHNSON_CANDIDATES['tylertech_cloud'],
         'root': 'https://pa.johnsoncountytx.org/',
         'district_clerk': JOHNSON_CANDIDATES['district_clerk'],
         'county_clerk': JOHNSON_CANDIDATES['county_clerk'],
@@ -502,13 +516,38 @@ def phase4_johnson(pw):
                 snapshot(page, f'johnson_{name}_landing_a{attempt}')
                 body = page.inner_text('body')
                 log.info(f"johnson_{name}: body ({len(body)} chars):\n{body[:3000]}")
-                dump_nav_links(page, f'johnson_{name}', limit=40)
+                links = dump_nav_links(page, f'johnson_{name}', limit=40)
                 dump_form(page, f'johnson_{name}')
                 body_low = body.lower()
                 log.info(f"johnson_{name}: mentions 'probate'={('probate' in body_low)} "
                          f"mentions 'case type'={('case type' in body_low)} "
                          f"mentions 'register'={('register' in body_low)} "
                          f"mentions 'guest'={('guest' in body_low)}")
+
+                # If this looks like the same classic Odyssey shape as Tarrant/
+                # Denton (i.e. it has the sbxControlID2 location dropdown), dump
+                # its options too so a Probate-scoped search can be built
+                # directly next iteration, same as the other two counties.
+                try:
+                    opts = page.evaluate("""() => {
+                        const sel = document.querySelector('#sbxControlID2');
+                        if (!sel) return null;
+                        return Array.from(sel.options).map(o => [o.value, (o.textContent||'').trim()]);
+                    }""")
+                    if opts:
+                        log.info(f"johnson_{name}: sbxControlID2 options: {opts}")
+                        probate_opts = [o for o in opts if 'probate' in o[1].lower()]
+                        log.info(f"johnson_{name}: probate-labelled options: {probate_opts}")
+                    else:
+                        log.info(f"johnson_{name}: no #sbxControlID2 found on this page "
+                                 f"(may not be the classic PublicAccess shape).")
+                except Exception as e:
+                    log.info(f"johnson_{name}: could not evaluate #sbxControlID2: {e}")
+
+                markers = check_waf(page, f'johnson_{name}')
+                is_blocked = markers.get('awswaf') or 'human verification' in (markers.get('title') or '').lower()
+                log.info(f"johnson_{name}: WAF-blocked={is_blocked}")
+
                 browser.close()
                 break  # success, no need to retry
             except Exception as exc:
