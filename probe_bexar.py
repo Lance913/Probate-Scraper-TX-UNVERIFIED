@@ -182,25 +182,34 @@ def check_for_bot_challenge(page, label: str) -> bool:
 
 def wait_for_results(page, timeout_ms=22000):
     """Poll for a real results signal after submit, per SYSTEM_GUIDE.md bug#1
-    (a slow render must never be read as '0 results')."""
+    (a slow render must never be read as '0 results'). Defensive against the
+    brief null-document window during a real full-page POST-redirect-GET
+    navigation (v6 crashed on document.body being null mid-navigation)."""
     deadline = time.monotonic() + timeout_ms / 1000
     last_state = None
     while time.monotonic() < deadline:
-        state = page.evaluate("""() => {
-            let gridRows = -1, gridTotal = -1;
-            try {
-                if (typeof jQuery !== 'undefined') {
-                    const g = jQuery('[data-role="grid"]').data('kendoGrid');
-                    if (g) { gridRows = g.dataSource.data().length; gridTotal = g.dataSource.total(); }
-                }
-            } catch (e) {}
-            const body = (document.body.innerText || '');
-            const noRes = /no results|no records|0 results|did not match|no matches|no cases found/i.test(body);
-            const realTableRows = Array.from(document.querySelectorAll('table')).map(
-                t => t.querySelectorAll('tr').length).filter(n => n > 1);
-            return {gridRows, gridTotal, noRes, realTableRows, bodyLen: body.length};
-        }""")
+        try:
+            state = page.evaluate("""() => {
+                if (!document.body) return {notReady: true};
+                let gridRows = -1, gridTotal = -1;
+                try {
+                    if (typeof jQuery !== 'undefined') {
+                        const g = jQuery('[data-role="grid"]').data('kendoGrid');
+                        if (g) { gridRows = g.dataSource.data().length; gridTotal = g.dataSource.total(); }
+                    }
+                } catch (e) {}
+                const body = (document.body.innerText || '');
+                const noRes = /no results|no records|0 results|did not match|no matches|no cases found/i.test(body);
+                const realTableRows = Array.from(document.querySelectorAll('table')).map(
+                    t => t.querySelectorAll('tr').length).filter(n => n > 1);
+                return {gridRows, gridTotal, noRes, realTableRows, bodyLen: body.length};
+            }""")
+        except Exception as e:
+            state = {'evalError': str(e)}
         last_state = state
+        if state.get('notReady') or state.get('evalError'):
+            page.wait_for_timeout(500)
+            continue
         if state['gridRows'] > 0 or any(n > 5 for n in state['realTableRows']):
             return 'has_rows', state
         if state['noRes']:
@@ -238,6 +247,10 @@ def main():
                 raise SystemExit("bot challenge before submit")
 
             page.locator('#btnSSSubmit').first.click(timeout=10000)
+            try:
+                page.wait_for_load_state('domcontentloaded', timeout=10000)
+            except Exception as e:
+                log.info(f"wait_for_load_state(domcontentloaded) after submit: {e}")
             log.info("Clicked submit — waiting/polling for real results (up to 22s)...")
             status, state = wait_for_results(page, timeout_ms=22000)
             log.info(f"wait_for_results -> status={status} state={state}")
