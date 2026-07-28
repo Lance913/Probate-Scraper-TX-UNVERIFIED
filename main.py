@@ -26,11 +26,8 @@ from collections import Counter
 from datetime import date, datetime
 from typing import List, Dict
 
-from scrapers import (
-    # Add each county's scraper class here as it's built, e.g.:
-    # CollinCountyScraper,
-    # BexarCountyScraper,
-)
+# Import each county's scraper class here as it's built, e.g.:
+#   from scrapers import CollinCountyScraper
 import sheets_writer
 
 logging.basicConfig(
