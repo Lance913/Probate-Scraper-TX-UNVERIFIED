@@ -14,7 +14,10 @@ architecture, GitHub Actions patterns, and lessons apply directly here).
 |---------|-----------------------------------------------------------|
 | Bexar   | portal-txbexar.tylertech.cloud |
 | Collin  | cijspub.co.collin.tx.us/PublicAccess (Tyler Odyssey) |
-| Dallas, Ellis, Tarrant, Denton, Johnson, Harris, Travis | not yet identified — needs discovery (SYSTEM_GUIDE.md §7 step 1) before probing |
+| Tarrant | odyssey.tarrantcounty.com/PublicAccess (classic Tyler Odyssey Public Access, now Tyler-cloud-hosted at portal-txtarrant.tylertech.cloud) — confirmed, but every search entry point is gated by an AWS WAF interactive CAPTCHA from GitHub Actions IPs; scraper wired in with loud block-detection, not a working data feed until that's resolved (see PR) |
+| Denton  | justice1.dentoncounty.gov/PublicAccess (classic Tyler Odyssey Public Access, self-hosted, no WAF) — confirmed and wired in; results-table parsing implemented but not yet verified against live data (see PR) |
+| Johnson | unresolved — the reference spreadsheet's link (johnson.tx.publicsearch.us) is confirmed wrong (that's the County Clerk's document-recording search, not case search); leading candidate is portal-txjohnson.tylertech.cloud/PublicAccess (same migration pattern as Tarrant/Collin), not yet verified — see PR |
+| Dallas, Ellis, Harris, Travis | not yet identified — needs discovery (SYSTEM_GUIDE.md §7 step 1) before probing |
 
 **Fields captured:** Decedent First Name · Decedent Last Name · Property
 Address (best-effort — often unavailable; a probate case index is
