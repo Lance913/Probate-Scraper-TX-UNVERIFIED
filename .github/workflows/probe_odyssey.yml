@@ -2,6 +2,14 @@ name: Probe Odyssey (Collin + platform sweep)
 
 on:
   workflow_dispatch: {}
+  # workflow_dispatch alone can't be triggered by name until this file is on
+  # the default branch. This is a throwaway probe living only on this branch,
+  # so trigger on push-to-this-branch instead (avoids touching main).
+  push:
+    branches: [add-collin-probate-scraper]
+    paths:
+      - 'probe_odyssey.py'
+      - '.github/workflows/probe_odyssey.yml'
 
 jobs:
   probe:
