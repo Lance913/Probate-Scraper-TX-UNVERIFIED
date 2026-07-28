@@ -1,6 +1,14 @@
 name: Daily Probate Scraper (9 TX counties)
 
 on:
+  # TEMPORARY — testing only, will be reverted before merge. workflow_dispatch
+  # can't be triggered by name until this file lands on the default branch, so
+  # push-to-this-branch is used to run the real dry_run=true/counties=collin
+  # verification the PR checklist requires. See SYSTEM_GUIDE.md §2 point 2.
+  push:
+    branches: [add-collin-probate-scraper]
+    paths:
+      - '.github/workflows/daily_scrape.yml'
   schedule:
     - cron: '45 13 * * *'   # ~7:45 AM CST — offset from the exact hour and from
                              # the sister foreclosure repo's run; GH cron is
@@ -30,7 +38,12 @@ jobs:
       - id: set
         run: |
           COUNTIES="${{ github.event.inputs.counties }}"
-          if [ -z "$COUNTIES" ]; then COUNTIES="collin dallas ellis bexar tarrant denton johnson harris travis"; fi
+          # TEMPORARY (testing only, reverted before merge): a push-triggered
+          # run has no workflow_dispatch inputs, so force collin-only here
+          # rather than falling through to the real "all 9" default (only
+          # collin is wired into SCRAPER_MAP right now; the other 8 would
+          # just fail argparse's --choices, which is noise for this test).
+          if [ -z "$COUNTIES" ]; then COUNTIES="collin"; fi
           ARR=$(echo "$COUNTIES" | tr ' ' '\n' | grep -v '^$' | jq -R . | jq -cs .)
           echo "matrix=$ARR" >> "$GITHUB_OUTPUT"
           echo "Matrix: $ARR"
@@ -108,5 +121,9 @@ jobs:
         run: |
           ARGS="--from-json artifacts/**/records-*.json"
           DRY="${{ github.event.inputs.dry_run }}"
+          # TEMPORARY (testing only, reverted before merge): force dry-run on
+          # a push-triggered test run (no workflow_dispatch inputs present,
+          # and GOOGLE_CREDENTIALS isn't configured on this repo yet anyway).
+          if [ -z "$DRY" ]; then DRY="true"; fi
           if [ "$DRY" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           python main.py $ARGS
