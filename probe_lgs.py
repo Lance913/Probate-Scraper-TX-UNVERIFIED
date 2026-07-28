@@ -40,6 +40,7 @@ diagnostics in one run (structure, frames, screenshot, raw HTML, console
 errors, network calls) so a single ~2min iteration yields maximum signal.
 """
 import logging
+from datetime import date, timedelta
 
 from playwright.sync_api import sync_playwright
 
@@ -436,6 +437,145 @@ def main():
                 log.info(f"[{label}] saved raw HTML ({len(fr_html)} chars) -> {fname}")
             except Exception as e:
                 log.info(f"[{label}] frame.content() FAILED: {str(e)[:200]}")
+
+        # ── PHASE 4 — Select CC070 (Ellis County Clerk) ─────────────────────
+        # The search form's P_1 dropdown lists ~60 small-county LGS-client
+        # offices, including "CC070=Ellis County Clerk" / "DC070=Ellis
+        # District Clerk". Probate is a County Clerk matter in TX (per this
+        # repo's README — County Court at Law hears estates), so select the
+        # CC070 (County Clerk) option, not DC070.
+        log.info("=" * 70)
+        log.info("PHASE 4 — Select CC070 (Ellis County Clerk), inspect panels")
+        log.info("=" * 70)
+
+        search_frame = get_frame_by_name('update')
+        if not search_frame:
+            log.error("Could not find 'update' frame with the search form — aborting Phase 4.")
+            browser.close()
+            return
+
+        try:
+            search_frame.locator('select[name="P_1"]').select_option(value='CC070', timeout=10000)
+            log.info("Selected P_1 = CC070 (Ellis County Clerk)")
+        except Exception as e:
+            log.error(f"Selecting P_1=CC070 FAILED: {str(e)[:300]}")
+            browser.close()
+            return
+
+        page.wait_for_timeout(6000)
+        try:
+            page.wait_for_load_state('load', timeout=10000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
+
+        try:
+            page.screenshot(path='ors_after_office_select.png', full_page=True)
+            log.info("Saved screenshot -> ors_after_office_select.png")
+        except Exception as e:
+            log.info(f"screenshot FAILED: {str(e)[:200]}")
+
+        search_frame2 = get_frame_by_name('update')
+        if not search_frame2:
+            log.error("'update' frame gone after office select — aborting.")
+            browser.close()
+            return
+
+        try:
+            panel_vis = search_frame2.evaluate("""() => {
+                const ids = ['layer1','layer21','layer22','layer23','layer24','layer25','layer26'];
+                return ids.map(id => {
+                    const el = document.getElementById(id);
+                    if (!el) return {id, present:false};
+                    const cs = window.getComputedStyle(el);
+                    return {id, present:true, visibility:cs.visibility, display:cs.display};
+                });
+            }""")
+            log.info(f"Panel visibility after office select (layer25=Probate): {panel_vis}")
+        except Exception as e:
+            log.info(f"panel visibility check FAILED: {str(e)[:300]}")
+
+        try:
+            fr_html = search_frame2.content()
+            with open('ors_after_office_select.html', 'w') as f:
+                f.write(fr_html)
+            log.info(f"Saved raw HTML ({len(fr_html)} chars) -> ors_after_office_select.html")
+        except Exception as e:
+            log.info(f"content() FAILED: {str(e)[:200]}")
+
+        # ── PHASE 5 — Probate Search: last 30 days, submit ──────────────────
+        log.info("=" * 70)
+        log.info("PHASE 5 — Probate Search (layer25): last 30 days, submit")
+        log.info("=" * 70)
+
+        end_d = date.today()
+        start_d = end_d - timedelta(days=30)
+        begin_str = start_d.strftime('%m/%d/%Y')
+        end_str = end_d.strftime('%m/%d/%Y')
+        log.info(f"Using date range {begin_str} - {end_str}")
+
+        try:
+            search_frame2.locator('input[name="P_38"]').fill(begin_str, timeout=8000)
+            search_frame2.locator('input[name="P_190"]').fill(end_str, timeout=8000)
+            log.info(f"Filled P_38(Beginning Date)={begin_str!r} P_190(Ending Date)={end_str!r}")
+        except Exception as e:
+            log.error(f"Filling probate date fields FAILED: {str(e)[:300]}")
+
+        try:
+            search_frame2.locator('select[name="P_56"]').select_option(value='D|ORPR_2', timeout=8000)
+            log.info("Selected P_56 = D|ORPR_2 (File Date Descending)")
+        except Exception as e:
+            log.info(f"Selecting sort order FAILED (non-fatal): {str(e)[:200]}")
+
+        try:
+            search_frame2.locator('button[name="WTKCB_12"]').click(timeout=10000)
+            log.info("Clicked WTKCB_12 (Probate Search submit)")
+        except Exception as e:
+            log.error(f"Click WTKCB_12 FAILED: {str(e)[:300]}")
+            browser.close()
+            return
+
+        page.wait_for_timeout(7000)
+        try:
+            page.wait_for_load_state('load', timeout=12000)
+        except Exception:
+            pass
+        page.wait_for_timeout(3000)
+
+        try:
+            page.screenshot(path='ors_probate_results.png', full_page=True)
+            log.info("Saved screenshot -> ors_probate_results.png")
+        except Exception as e:
+            log.info(f"screenshot FAILED: {str(e)[:200]}")
+
+        frames5 = dump_frames(page)
+        for i, fr in enumerate(frames5):
+            label = f"phase5-frame[{i}]:{fr.name}:{fr.url}"
+            st = check_structure(fr, label)
+            if st.get('htmlLen', 999) < 60:
+                continue
+            safe_body_text(fr, label, limit=9000)
+            try:
+                fr_html = fr.content()
+                fname = f'ors_probate_results_frame_{i}.html'
+                with open(fname, 'w') as f:
+                    f.write(fr_html)
+                log.info(f"[{label}] saved raw HTML ({len(fr_html)} chars) -> {fname}")
+            except Exception as e:
+                log.info(f"[{label}] frame.content() FAILED: {str(e)[:200]}")
+
+            try:
+                tbl_info = fr.evaluate("""() => {
+                    const tables = Array.from(document.querySelectorAll('table'));
+                    return tables.map((t,i) => ({
+                        idx: i, id: t.id||'', rows: t.rows.length,
+                        firstRowText: t.rows.length ? Array.from(t.rows[0].cells).map(c=>c.textContent.trim().slice(0,40)) : [],
+                        secondRowText: t.rows.length > 1 ? Array.from(t.rows[1].cells).map(c=>c.textContent.trim().slice(0,40)) : []
+                    })).filter(t => t.rows > 1);
+                }""")
+                log.info(f"[{label}] tables with >1 row: {tbl_info}")
+            except Exception as e:
+                log.info(f"[{label}] table dump FAILED: {str(e)[:200]}")
 
         browser.close()
 

@@ -47,4 +47,8 @@ jobs:
             ors_after_continue.png
             ors_after_search_click.png
             ors_phase3_frame_*.html
+            ors_after_office_select.png
+            ors_after_office_select.html
+            ors_probate_results.png
+            ors_probate_results_frame_*.html
           if-no-files-found: warn
