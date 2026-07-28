@@ -511,6 +511,77 @@ def phase3_denton(pw):
             if cleared:
                 dismiss_overlays(page, 'denton search form')
                 dump_form(page, 'denton search form')
+
+                # Switch to "Date Filed" search mode (id=DateFiled, name=SearchBy,
+                # value=6) -- Party mode requires a Last Name (confirmed via
+                # screenshot), which we don't have for a blind daily scrape.
+                try:
+                    page.check('#DateFiled')
+                    page.wait_for_timeout(1500)
+                    log.info("denton: switched SearchBy to 'Date Filed' -- form after switch:")
+                    dump_form(page, 'denton date-filed mode')
+                    snapshot(page, 'denton_date_filed_mode')
+                except Exception as e:
+                    log.warning(f"denton: could not switch to Date Filed mode: {e}")
+
+                # Scope to Probate only if the case-category checkboxes are
+                # actually interactive (best-effort; harmless if already hidden
+                # / non-interactive -- we fall back to client-side filtering
+                # via base.py's is_estate_case() either way).
+                for uncheck_id in ['chkCriminal', 'chkFamily', 'chkCivil',
+                                   'chkDtRangeCriminal', 'chkDtRangeFamily', 'chkDtRangeCivil']:
+                    try:
+                        el = page.locator(f'#{uncheck_id}')
+                        if el.count() > 0:
+                            el.uncheck(force=True, timeout=3000)
+                            log.info(f"denton: unchecked #{uncheck_id}")
+                    except Exception as e:
+                        log.info(f"denton: could not uncheck #{uncheck_id}: {str(e)[:150]}")
+
+                start_fmt = WINDOW_START.strftime('%m/%d/%Y')
+                end_fmt = TODAY.strftime('%m/%d/%Y')
+                filled = False
+                for s_sel, e_sel in [('#DateFiledOnAfter', '#DateFiledOnBefore')]:
+                    try:
+                        if page.locator(s_sel).count() > 0:
+                            page.fill(s_sel, start_fmt)
+                            page.fill(e_sel, end_fmt)
+                            filled = True
+                            log.info(f"denton: filled date range {start_fmt}..{end_fmt}")
+                    except Exception as e:
+                        log.warning(f"denton: date fill failed: {e}")
+                log.info(f"denton: date range filled: {filled}")
+                snapshot(page, 'denton_pre_submit')
+
+                submitted = click_first_matching(page, ['#SearchSubmit', 'input[value="Search" i]'], 'denton')
+                log.info(f"denton: submitted search: {submitted}")
+                if submitted:
+                    page.wait_for_timeout(3000)
+                    try:
+                        page.wait_for_load_state('networkidle', timeout=15000)
+                    except Exception:
+                        pass
+                    log.info(f"denton: post-submit title={page.title()!r} url={page.url!r}")
+                    snapshot(page, 'denton_results')
+                    cleared2 = try_clear_waf(page, 'denton results')
+                    if cleared2:
+                        dump_table(page, 'denton results')
+
+                        case_links = page.evaluate("""() => Array.from(document.querySelectorAll('a'))
+                            .map(a => ({text:(a.textContent||'').trim(), href:a.getAttribute('href')||''}))
+                            .filter(l => /^\\d{2,4}-\\d+|^[A-Z]{1,3}-?\\d{2,4}-\\d+/.test(l.text));""")
+                        log.info(f"denton: {len(case_links)} case-number-shaped links; sample: {case_links[:8]}")
+                        if case_links:
+                            try:
+                                page.click(f"a:has-text(\"{case_links[0]['text']}\")")
+                                page.wait_for_timeout(2500)
+                                page.wait_for_load_state('networkidle', timeout=15000)
+                                log.info(f"denton: case detail title={page.title()!r} url={page.url!r}")
+                                snapshot(page, 'denton_case_detail')
+                                detail_text = page.inner_text('body')
+                                log.info(f"denton: case detail body ({len(detail_text)} chars):\n{detail_text[:6000]}")
+                            except Exception as e:
+                                log.warning(f"denton: could not open case detail: {e}")
         browser.close()
     except Exception as exc:
         log.error(f"denton: error in recon: {exc}", exc_info=True)
@@ -528,36 +599,59 @@ def phase4_johnson(pw):
     log.info("=" * 70)
     log.info("PHASE 4 -- Johnson DistrictClerkPA vs CountyClerkPA")
     log.info("=" * 70)
-    for name, url in JOHNSON_CANDIDATES.items():
-        browser = pw.chromium.launch(headless=True, args=['--disable-blink-features=AutomationControlled'])
-        ctx, page = new_context(browser)
-        try:
-            resp = page.goto(url, wait_until='networkidle', timeout=25000)
-            page.wait_for_timeout(1500)
-            status = resp.status if resp else None
-            log.info(f"johnson_{name}: status={status} final_url={page.url!r} title={page.title()!r}")
-            dismiss_overlays(page, f'johnson_{name}')
-            check_waf(page, f'johnson_{name}')
-            snapshot(page, f'johnson_{name}_landing')
-            body = page.inner_text('body')
-            log.info(f"johnson_{name}: body ({len(body)} chars):\n{body[:3000]}")
-            dump_nav_links(page, f'johnson_{name}', limit=40)
-            dump_form(page, f'johnson_{name}')
-            # If this looks like a real Odyssey PublicAccess (not just a login
-            # wall requiring registration), see if a case-type/search selector
-            # already reveals "Probate" as a searchable category.
-            body_low = body.lower()
-            log.info(f"johnson_{name}: mentions 'probate'={('probate' in body_low)} "
-                     f"mentions 'case type'={('case type' in body_low)} "
-                     f"mentions 'register'={('register' in body_low)} "
-                     f"mentions 'guest'={('guest' in body_low)}")
-        except Exception as exc:
-            log.info(f"johnson_{name}: FAILED: {str(exc)[:300]}")
-        finally:
+
+    # 4a -- raw `requests` cross-check, independent of Chromium/Playwright's
+    # fingerprint, to tell a TCP/host-level block apart from a browser-
+    # specific one. Also try the bare domain root.
+    import requests as _requests
+    raw_targets = {
+        'root': 'https://pa.johnsoncountytx.org/',
+        'district_clerk': JOHNSON_CANDIDATES['district_clerk'],
+        'county_clerk': JOHNSON_CANDIDATES['county_clerk'],
+    }
+    for name, url in raw_targets.items():
+        for attempt in range(1, 4):
             try:
+                r = _requests.get(url, timeout=20, headers={'User-Agent': UA})
+                log.info(f"johnson_raw_{name}: attempt {attempt} -> status={r.status_code} "
+                         f"final_url={r.url!r} len={len(r.content)} "
+                         f"title_hint={re.search(r'<title>(.*?)</title>', r.text, re.I | re.S)}")
+                break
+            except Exception as e:
+                log.info(f"johnson_raw_{name}: attempt {attempt} FAILED: {str(e)[:200]}")
+                import time as _time
+                _time.sleep(3)
+
+    # 4b -- Playwright retries per candidate (in case of a transient blip).
+    for name, url in JOHNSON_CANDIDATES.items():
+        for attempt in range(1, 3):
+            browser = pw.chromium.launch(headless=True, args=['--disable-blink-features=AutomationControlled'])
+            ctx, page = new_context(browser)
+            try:
+                resp = page.goto(url, wait_until='networkidle', timeout=25000)
+                page.wait_for_timeout(1500)
+                status = resp.status if resp else None
+                log.info(f"johnson_{name}: attempt {attempt} status={status} final_url={page.url!r} title={page.title()!r}")
+                dismiss_overlays(page, f'johnson_{name}')
+                check_waf(page, f'johnson_{name}')
+                snapshot(page, f'johnson_{name}_landing_a{attempt}')
+                body = page.inner_text('body')
+                log.info(f"johnson_{name}: body ({len(body)} chars):\n{body[:3000]}")
+                dump_nav_links(page, f'johnson_{name}', limit=40)
+                dump_form(page, f'johnson_{name}')
+                body_low = body.lower()
+                log.info(f"johnson_{name}: mentions 'probate'={('probate' in body_low)} "
+                         f"mentions 'case type'={('case type' in body_low)} "
+                         f"mentions 'register'={('register' in body_low)} "
+                         f"mentions 'guest'={('guest' in body_low)}")
                 browser.close()
-            except Exception:
-                pass
+                break  # success, no need to retry
+            except Exception as exc:
+                log.info(f"johnson_{name}: attempt {attempt} FAILED: {str(exc)[:300]}")
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 
 
 def main():
