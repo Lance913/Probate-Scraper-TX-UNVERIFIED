@@ -1,26 +1,21 @@
 """
-Probe v1 — Collin County Odyssey Public Access (probate) + platform fingerprint
-sweep of other TX counties that research suggests may run the same Tyler
-Odyssey "Public Access" product (classic /PublicAccess/ ASP.NET WebForms
-shape, distinct from the newer "Odyssey Portal" / tylertech.cloud product).
+Probe v2 — Collin County has MIGRATED off cijspub.co.collin.tx.us (that URL
+now 503s "This site has been moved permanently") to a new Tyler-hosted
+domain: https://portal-txcollin.tylertech.cloud/Publicaccess (discovered from
+a link on the dead page's own error screen). That's the SAME "tylertech.cloud"
+domain family this repo's README already notes for Bexar
+(portal-txbexar.tylertech.cloud), and v1 of this probe showed Tarrant's
+classic URL 302-redirects to portal-txtarrant.tylertech.cloud too. So this
+version:
 
-Part 1 — fingerprint_others(): cheap reachability + platform-marker check for
-candidate URLs found via web research for Dallas, Tarrant, Denton, Johnson,
-Travis, Ellis, Harris. Does NOT try to search each one — just: does it
-resolve, what's the title, does it look like classic Odyssey PublicAccess
-(ASP.NET __VIEWSTATE + disclaimer boilerplate + left-nav search types)?
+Part 1 — re-fingerprint the same county candidates (now with a settle-wait so
+we don't miss a client-side redirect), PLUS peek at Bexar's tylertech.cloud
+URL purely for platform-shape comparison (read-only; not building Bexar).
 
-Part 2 — investigate_collin(): the real target. Dump:
-  - what Search.aspx?ID=200 actually resolves to (disclaimer? search form?)
-  - every search-type nav option and its ID (to see if other IDs = other
-    case categories, and confirm what 200 means)
-  - every field/select on the default search form + all <select> options
-    (hunting for a Case Category / Case Type dropdown)
-  - any CAPTCHA / bot-check markers
-  - if a search is submittable, submit one broad query and dump the results
-    table headers + sample rows verbatim (via JS, not assumptions)
-  - open one case detail page and dump its full structure, hunting for a
-    "Party" section with role labels (Decedent / Applicant / Attorney)
+Part 2 — deep-dive the REAL current Collin URL. Also capture network
+responses (esp. JSON/XHR) while interacting, since SYSTEM_GUIDE §6 notes
+modern portals are often React/JS apps with a query-param-driven results API
+worth reverse-engineering directly.
 """
 import logging
 import re
@@ -31,15 +26,12 @@ from playwright.sync_api import sync_playwright
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [PROBE] %(message)s')
 log = logging.getLogger()
 
-COLLIN_URL = "https://cijspub.co.collin.tx.us/PublicAccess/Search.aspx?ID=200"
-COLLIN_BASE = "https://cijspub.co.collin.tx.us/PublicAccess/"
+COLLIN_CANDIDATES = [
+    "https://portal-txcollin.tylertech.cloud/Publicaccess",
+    "https://portal-txcollin.tylertech.cloud/",
+]
+BEXAR_REFERENCE = "https://portal-txbexar.tylertech.cloud/Publicaccess"
 
-# Candidate URLs for other TX counties, gathered from web research (official
-# county-government pages), NOT assumed — each one still gets fingerprinted
-# for real here. Anything not on this list either wasn't found (Ellis — its
-# official site links to a non-Odyssey vendor, public.lgsonlinesolutions.com,
-# so no Odyssey candidate exists to test) or is a different Tyler product
-# generation worth flagging separately (Travis's odysseyweb.../Portal).
 CANDIDATES = {
     "dallas":  "https://obpublicaccess24.dallascounty.org/PublicAccess/",
     "tarrant": "https://odyssey.tarrantcounty.com/PublicAccess/default.aspx",
@@ -78,12 +70,12 @@ def dump_form(page, label):
                       f"name={el['name']!r} placeholder={el['placeholder']!r} visible={el['visible']}")
 
 
-def dump_nav_links(page, label):
+def dump_nav_links(page, label, limit=60):
     links = page.evaluate("""() => Array.from(document.querySelectorAll('a'))
-        .map(a => ({text:(a.textContent||'').trim(), href:a.getAttribute('href')||''}))
+        .map(a => ({text:(a.textContent||'').replace(/\\s+/g,' ').trim(), href:a.getAttribute('href')||''}))
         .filter(l => l.text || l.href);""")
     log.info(f"[{label}] links ({len(links)}):")
-    for l in links[:80]:
+    for l in links[:limit]:
         log.info(f"  LINK text={l['text']!r} href={l['href']!r}")
 
 
@@ -101,52 +93,27 @@ def check_captcha(page, label):
     return info
 
 
-def accept_disclaimer_if_present(page, label):
-    """Odyssey instances commonly show a disclaimer/terms page first. Try a
-    broad set of likely accept controls; log whatever we find either way."""
-    try:
-        body_text = page.inner_text('body')[:2000]
-    except Exception:
-        body_text = ''
-    log.info(f"[{label}] initial title={page.title()!r} url={page.url!r}")
-    log.info(f"[{label}] initial body text (first 2000 chars):\n{body_text}")
-
-    clicked = False
-    for sel in [
-        'input[type="submit"][value*="Accept" i]',
-        'input[type="submit"][value*="Agree" i]',
-        'input[type="submit"][value*="Enter" i]',
-        'input[type="button"][value*="Accept" i]',
-        'button:has-text("Accept")',
-        'button:has-text("Agree")',
-        'button:has-text("Enter")',
-        'button:has-text("Continue")',
-        'a:has-text("Accept")',
-        'a:has-text("I Agree")',
-        'a:has-text("Enter Site")',
-        '#idAccept',
-        '#btnAccept',
-    ]:
+def click_first_matching(page, selectors, label):
+    for sel in selectors:
         try:
             el = page.locator(sel).first
             if el.count() > 0 and el.is_visible():
-                log.info(f"[{label}] clicking disclaimer control matching {sel!r}")
-                with page.expect_navigation(wait_until='networkidle', timeout=15000):
-                    el.click()
-                clicked = True
-                break
+                log.info(f"[{label}] clicking control matching {sel!r} (text={el.inner_text()[:60]!r})")
+                el.click()
+                page.wait_for_timeout(2000)
+                try:
+                    page.wait_for_load_state('networkidle', timeout=10000)
+                except Exception:
+                    pass
+                return True
         except Exception:
             continue
-    if not clicked:
-        log.info(f"[{label}] no disclaimer/accept control matched — assuming none present.")
-    else:
-        log.info(f"[{label}] post-disclaimer title={page.title()!r} url={page.url!r}")
-    return clicked
+    return False
 
 
 def investigate_collin(pw):
     log.info("=" * 70)
-    log.info("PART 2 — Collin County deep dive")
+    log.info("PART 2 — Collin County deep dive (NEW tylertech.cloud URL)")
     log.info("=" * 70)
     browser = pw.chromium.launch(headless=True,
                                   args=['--disable-blink-features=AutomationControlled'])
@@ -157,48 +124,85 @@ def investigate_collin(pw):
     page = ctx.new_page()
     page.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
     page.set_default_timeout(30000)
+
+    xhr_log = []
+    def on_response(resp):
+        try:
+            ct = resp.headers.get('content-type', '')
+            if 'json' in ct or '/api/' in resp.url.lower():
+                xhr_log.append((resp.request.method, resp.url, resp.status))
+        except Exception:
+            pass
+    page.on('response', on_response)
+
     try:
-        log.info(f"Collin: goto {COLLIN_URL}")
-        resp = page.goto(COLLIN_URL, wait_until='networkidle')
-        log.info(f"Collin: HTTP status={resp.status if resp else 'N/A'}")
-        accept_disclaimer_if_present(page, 'collin')
-        page.wait_for_timeout(1000)
+        landed = False
+        for url in COLLIN_CANDIDATES:
+            try:
+                log.info(f"Collin: goto {url}")
+                resp = page.goto(url, wait_until='networkidle', timeout=25000)
+                status = resp.status if resp else None
+                log.info(f"Collin: HTTP status={status} final_url={page.url!r} title={page.title()!r}")
+                if status and status < 400:
+                    landed = True
+                    break
+            except Exception as e:
+                log.info(f"Collin: {url} failed: {str(e)[:200]}")
+        if not landed:
+            log.error("Collin: could not land on any candidate URL — stopping deep dive.")
+            browser.close()
+            return
 
-        # If we're not already on a Search.aspx?ID= page, navigate there explicitly.
-        if 'Search.aspx' not in page.url:
-            log.info(f"Collin: not on Search.aspx after disclaimer, re-navigating to {COLLIN_URL}")
-            page.goto(COLLIN_URL, wait_until='networkidle')
-            page.wait_for_timeout(1000)
-
-        log.info(f"Collin: final title={page.title()!r} url={page.url!r}")
+        page.wait_for_timeout(2000)
         check_captcha(page, 'collin')
         dump_nav_links(page, 'collin')
-        dump_form(page, 'collin')
-
-        # Try to find/read a "Case Category" selector's options directly (if any).
         try:
             body_text = page.inner_text('body')
-            log.info(f"Collin: full body text ({len(body_text)} chars):\n{body_text[:6000]}")
+            log.info(f"Collin: full body text ({len(body_text)} chars):\n{body_text[:5000]}")
         except Exception as e:
             log.info(f"Collin: could not read body text: {e}")
+        dump_form(page, 'collin landing')
 
-        # Try navigating to the bare default page (no ID) and a couple of
-        # neighboring IDs to see how the node list / case-category nav differs.
-        for probe_id in [None, 199, 200, 201]:
+        # Look for a "Smart Search" / "Search" / "Case Records" entry point (the
+        # modern Odyssey Portal product gates the actual search behind a button,
+        # per what Travis's landing page described).
+        clicked = click_first_matching(page, [
+            'a:has-text("Smart Search")', 'button:has-text("Smart Search")',
+            'a:has-text("Case Records")', 'a:has-text("Search")',
+            'button:has-text("Search")', 'a:has-text("Begin")',
+        ], 'collin')
+        log.info(f"Collin: clicked into a search entry point: {clicked}")
+        if clicked:
+            log.info(f"Collin: post-click title={page.title()!r} url={page.url!r}")
+            check_captcha(page, 'collin search page')
+            dump_nav_links(page, 'collin search page')
             try:
-                url = COLLIN_BASE + ("default.aspx" if probe_id is None
-                                      else f"Search.aspx?ID={probe_id}")
-                page.goto(url, wait_until='networkidle')
-                page.wait_for_timeout(600)
-                t = page.title()
-                heading = ''
-                try:
-                    heading = page.locator('h1, h2, .ssSearchHeader, #hdrTitle').first.inner_text(timeout=2000)
-                except Exception:
-                    pass
-                log.info(f"Collin: probe ID={probe_id} -> url={page.url!r} title={t!r} heading={heading!r}")
+                body_text = page.inner_text('body')
+                log.info(f"Collin: search-page body text ({len(body_text)} chars):\n{body_text[:5000]}")
             except Exception as e:
-                log.info(f"Collin: probe ID={probe_id} failed: {str(e)[:200]}")
+                log.info(f"Collin: could not read search-page body text: {e}")
+            dump_form(page, 'collin search page')
+
+            # Try to open "Advanced Filtering Options" if present (Travis
+            # mentioned this as where case-category/court selection lives).
+            clicked2 = click_first_matching(page, [
+                'a:has-text("Advanced Filtering")', 'button:has-text("Advanced Filtering")',
+                'a:has-text("Advanced")', 'button:has-text("Advanced")',
+                'a:has-text("Filter")', 'button:has-text("Filter")',
+            ], 'collin')
+            log.info(f"Collin: clicked into advanced filtering: {clicked2}")
+            if clicked2:
+                log.info(f"Collin: post-filter-click title={page.title()!r} url={page.url!r}")
+                dump_form(page, 'collin advanced filter panel')
+                try:
+                    body_text = page.inner_text('body')
+                    log.info(f"Collin: advanced-filter body text ({len(body_text)} chars):\n{body_text[:5000]}")
+                except Exception as e:
+                    log.info(f"Collin: could not read advanced-filter body text: {e}")
+
+        log.info(f"Collin: XHR/JSON responses observed so far ({len(xhr_log)}):")
+        for m, u, s in xhr_log[:60]:
+            log.info(f"  {m} {s} {u}")
 
         browser.close()
     except Exception as exc:
@@ -207,6 +211,30 @@ def investigate_collin(pw):
             browser.close()
         except Exception:
             pass
+
+
+def peek_bexar_reference(pw):
+    """Read-only platform-shape comparison. Collin's new home is the same
+    tylertech.cloud domain family as Bexar's — this is NOT building/probing
+    Bexar's scraper (another agent owns that), just confirming whether the
+    two counties' portals present the same UI, which affects whether Collin's
+    scraper design can/should mirror it."""
+    log.info("=" * 70)
+    log.info("PART 3 — Bexar tylertech.cloud reference peek (comparison only)")
+    log.info("=" * 70)
+    browser = pw.chromium.launch(headless=True)
+    try:
+        page = browser.new_context().new_page()
+        page.set_default_timeout(20000)
+        resp = page.goto(BEXAR_REFERENCE, wait_until='networkidle', timeout=20000)
+        page.wait_for_timeout(1500)
+        log.info(f"bexar: status={resp.status if resp else None} final_url={page.url!r} title={page.title()!r}")
+        body = page.inner_text('body')[:1500]
+        log.info(f"bexar: body snippet: {body!r}")
+    except Exception as e:
+        log.info(f"bexar: FAILED: {str(e)[:300]}")
+    finally:
+        browser.close()
 
 
 def fingerprint_others(pw):
@@ -226,6 +254,7 @@ def fingerprint_others(pw):
             page.set_default_timeout(20000)
             log.info(f"--- {county} : {url}")
             resp = page.goto(url, wait_until='networkidle', timeout=20000)
+            page.wait_for_timeout(1500)  # catch a late client-side redirect
             status = resp.status if resp else None
             final_url = page.url
             title = page.title()
@@ -235,9 +264,11 @@ def fingerprint_others(pw):
                 body_snip = page.inner_text('body')[:500]
             except Exception:
                 pass
-            is_publicaccess_shape = '/PublicAccess/' in final_url or '/publicaccess/' in final_url.lower()
+            is_publicaccess_shape = '/publicaccess' in final_url.lower()
+            is_tylertech_cloud = 'tylertech.cloud' in final_url.lower()
             log.info(f"{county}: status={status} final_url={final_url!r} title={title!r} "
-                     f"publicaccess_url_shape={is_publicaccess_shape} viewstate={markers.get('viewstate')}")
+                     f"publicaccess_url_shape={is_publicaccess_shape} tylertech_cloud={is_tylertech_cloud} "
+                     f"viewstate={markers.get('viewstate')}")
             log.info(f"{county}: body snippet: {body_snip!r}")
         except Exception as exc:
             log.info(f"{county}: FAILED to load: {str(exc)[:300]}")
@@ -252,6 +283,7 @@ def fingerprint_others(pw):
 def main():
     with sync_playwright() as pw:
         fingerprint_others(pw)
+        peek_bexar_reference(pw)
         investigate_collin(pw)
 
 
