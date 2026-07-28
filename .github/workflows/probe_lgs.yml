@@ -44,4 +44,7 @@ jobs:
             ors_frame_*.html
             ors_after_guest_login.png
             ors_postlogin_frame_*.html
+            ors_after_continue.png
+            ors_after_search_click.png
+            ors_phase3_frame_*.html
           if-no-files-found: warn

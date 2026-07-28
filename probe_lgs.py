@@ -333,6 +333,110 @@ def main():
             except Exception as e:
                 log.info(f"[{label}] frame.content() FAILED: {str(e)[:200]}")
 
+        # ── PHASE 3 — Dismiss guest-message dialog, click into Search ──────
+        # The 'update' frame post-login is a "Guest Login Message" panel
+        # ("You can not purchase images without an account login.") with
+        # Continue / Search (#actionButton3) / Logoff (#actionButton4)
+        # buttons. Dismiss it, then click Search to reach the real case-
+        # search form.
+        log.info("=" * 70)
+        log.info("PHASE 3 — Dismiss guest message, click into Search")
+        log.info("=" * 70)
+
+        def get_frame_by_name(nm):
+            for fr in page.frames:
+                if fr.name == nm:
+                    return fr
+            return None
+
+        def dump_onclick(target, label):
+            try:
+                els = target.evaluate("""() => Array.from(document.querySelectorAll('[onclick]')).map(el => ({
+                    tag: el.tagName.toLowerCase(), id: el.id||'', cls: el.className||'',
+                    text: (el.textContent||'').trim().slice(0,60),
+                    onclick: (el.getAttribute('onclick')||'').slice(0,150)
+                }))""")
+                log.info(f"[{label}] elements with onclick ({len(els)}):")
+                for el in els[:80]:
+                    log.info(f"  {el}")
+            except Exception as e:
+                log.info(f"[{label}] onclick dump FAILED: {str(e)[:200]}")
+
+        update_frame = get_frame_by_name('update')
+        menu_frame2 = get_frame_by_name('menu')
+        if update_frame:
+            dump_onclick(update_frame, 'update frame (pre-continue)')
+        if menu_frame2:
+            dump_onclick(menu_frame2, 'menu frame (pre-continue)')
+
+        if not update_frame:
+            log.error("Could not find frame named 'update' post-login — stopping before click.")
+            browser.close()
+            return
+
+        try:
+            update_frame.locator('#WTKCB_10').click(timeout=8000)
+            log.info("Clicked #WTKCB_10 (Continue)")
+        except Exception as e:
+            log.error(f"Click #WTKCB_10 FAILED: {str(e)[:300]}")
+
+        page.wait_for_timeout(4000)
+        try:
+            page.screenshot(path='ors_after_continue.png', full_page=True)
+            log.info("Saved screenshot -> ors_after_continue.png")
+        except Exception as e:
+            log.info(f"screenshot FAILED: {str(e)[:200]}")
+
+        # Re-find frames (may have been recreated) and try to click Search.
+        clicked_search = False
+        for fr_name in ('update', 'menu'):
+            fr_try = get_frame_by_name(fr_name)
+            if not fr_try:
+                continue
+            try:
+                btn = fr_try.locator('#actionButton3')
+                if btn.count() > 0:
+                    btn.click(timeout=8000)
+                    clicked_search = True
+                    log.info(f"Clicked #actionButton3 (Search) in frame name={fr_name!r} url={fr_try.url!r}")
+                    break
+            except Exception as e:
+                log.info(f"Click #actionButton3 in frame name={fr_name!r} failed: {str(e)[:200]}")
+
+        if not clicked_search:
+            log.error("Could not click a Search button by id=actionButton3 in update/menu frames.")
+
+        page.wait_for_timeout(5000)
+        try:
+            page.wait_for_load_state('load', timeout=10000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
+
+        try:
+            page.screenshot(path='ors_after_search_click.png', full_page=True)
+            log.info("Saved screenshot -> ors_after_search_click.png")
+        except Exception as e:
+            log.info(f"screenshot FAILED: {str(e)[:200]}")
+
+        frames3 = dump_frames(page)
+        for i, fr in enumerate(frames3):
+            label = f"phase3-frame[{i}]:{fr.name}:{fr.url}"
+            st = check_structure(fr, label)
+            if st.get('htmlLen', 999) < 60:
+                continue  # skip known-empty heart.html-style placeholder frames
+            safe_body_text(fr, label, limit=6000)
+            dump_form(fr, label)
+            dump_onclick(fr, label)
+            try:
+                fr_html = fr.content()
+                fname = f'ors_phase3_frame_{i}.html'
+                with open(fname, 'w') as f:
+                    f.write(fr_html)
+                log.info(f"[{label}] saved raw HTML ({len(fr_html)} chars) -> {fname}")
+            except Exception as e:
+                log.info(f"[{label}] frame.content() FAILED: {str(e)[:200]}")
+
         browser.close()
 
 
