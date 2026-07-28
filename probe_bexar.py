@@ -1,50 +1,45 @@
 """
-Probe v4 — Bexar County Tyler Odyssey Portal (portal-txbexar.tylertech.cloud).
+Probe v5 — Bexar County Tyler Odyssey Portal (portal-txbexar.tylertech.cloud).
 
-Ground truth from v1-v3 (confirmed):
-  * Kendo UI (Telerik) widgets, ASP.NET MVC model binding under `caseCriteria.*`.
-    Real submit: input#btnSSSubmit[type=submit]. Settings.CaptchaEnabled='True'
-    but never actually tested server-side yet (every attempt so far died in
-    pure CLIENT-SIDE validation before any network request fired).
-  * caseCriteria_CourtLocation (kendoComboBox) real options: All Locations /
-    County Clerk / District Clerk / Justice of the Peace.
-  * caseCriteria_CaseType (kendoComboBox) DOES cascade from CourtLocation
-    (confirmed: its dataSource's "ParentItem" field changes to match the
-    selected location) but each location's *default* dataSource is just ONE
-    generic placeholder item, e.g. {'ParentItem':'County Clerk','Id':-1,
-    'Text':'County Clerk Case Search','Value':'County Clerk Case Search'}.
-    This is very likely a server-filtered autocomplete (only returns real
-    case-type matches once you TYPE a query) rather than a fully preloaded
-    list — v3 never tried typing into it. That's this probe's top priority.
-  * The main caseCriteria_SearchCriteria box rejects a bare '*' — client-side
-    "Please enter a value for search criteria" with ZERO network requests
-    (so '*' alone fails some client regex/length check, not a server rule).
-  * v3 crashed on a later .fill() (30s actionability timeout) — almost
-    certainly a lingering Kendo popup/overlay from scripting the Location
-    widget right before trying to interact with another field. This probe
-    fixes that: JS-based value-setting (bypasses Playwright actionability
-    waits entirely) with try/except around every step, and Escape presses
-    to close popups after every Kendo interaction.
+Ground truth from v1-v4 (confirmed):
+  * Kendo UI widgets, submit = input#btnSSSubmit[type=submit].
+  * caseCriteria_CourtLocation cascades to caseCriteria_CaseType ENTIRELY
+    client-side (0 network requests on change) — the "cascade" only ever
+    yields a single generic placeholder item per location though (e.g.
+    'County Clerk Case Search'). Typing into the CaseType box ALSO fired
+    zero network requests across 18 attempts (9 terms x 2 locations) — so
+    it is not a server-filtered autocomplete either. This dropdown's real
+    per-type taxonomy (if reachable here at all) needs a different approach
+    than anything tried so far — DEPRIORITIZED for this probe.
+  * The SEPARATE caseCriteria_NameLast field (and First/Middle) is NOT what
+    client validation checks — filling it with 'A*', 'AB*', '%', 'A%' (v4)
+    ALL produced the exact same "Please enter a value for search criteria"
+    error, proving that field is inert/hidden in the current UI mode.
+  * The REAL required field is the single combined text input
+    #caseCriteria_SearchCriteria (plain <input type=text>, no Kendo widget
+    attached). v3 only ever tried it with a bare '*' (rejected). NEVER
+    tried with a realistic value like 'A*' or 'SMITH*' — that is the
+    priority gap this probe closes.
 
-This probe:
-  1. PRIORITY: with Location=County Clerk, TYPE into the real CaseType input
-     (triggers Kendo's remote filter) several probe terms — 'estate',
-     'administ', 'probate', 'muniment', 'heirship', 'will', 'guardian',
-     'mental' — and after each, dump both the widget's dataSource AND the
-     raw Kendo popup DOM list, plus save any network request the typing
-     fires (the real autocomplete endpoint + param shape). This should
-     finally reveal the real estate case-type taxonomy and whether
-     guardianship/mental-health share it.
-  2. Repeats step 1 for Location=District Clerk too (probate could
-     conceivably sit there instead/also — cheap to check, removes doubt).
-  3. Tests the minimum viable value for caseCriteria_NameLast: 'A*', 'AB*',
-     and '%' (in case this deployment uses SQL-style wildcards instead of
-     '*'), each on a fresh page load, watching for either a real network
-     POST (success) or a specific client-side length/format complaint.
-  4. If any submission gets past client validation, dumps whatever comes
-     back — including explicitly checking for a captcha/human-verification
-     challenge at that point (per coordinator guidance: if seen, log loudly,
-     do not attempt to solve/bypass it, do not theorize fingerprinting).
+This probe, in order, stopping at first success:
+  1. Fresh page, expand Advanced, set Location=County Clerk (client-side
+     cascade, confirmed harmless), fill File Date Start/End wide.
+  2. Try #caseCriteria_SearchCriteria = 'A*', then 'SMITH*', then 'SMITH, *',
+     then 'A*, *' — one per fresh page load — clicking the REAL submit
+     button each time and checking for (a) a real network POST/GET beyond
+     the static page load, (b) absence of the "please enter/incorrectly"
+     client validation text, (c) — per explicit instruction from the
+     coordinator — an active CAPTCHA/human-verification CHALLENGE page
+     (not just the passive checkbox we already know exists). If seen: log
+     it loudly and stop trying that path; do NOT attempt to solve/bypass
+     it, do NOT theorize browser-fingerprinting causes.
+  3. On first real success: dump EVERYTHING about the results — Kendo Grid
+     dataSource (structured JSON), any <table>, real case-number links, and
+     the actual 'Case Type' values seen in real rows (the most reliable way
+     left to learn the true estate-case-type taxonomy, since the dropdown
+     approach has failed twice). Opens the first case detail link and dumps
+     its Party Information section verbatim (decedent/executor structured
+     data vs OCR-needed — the other big open question).
 """
 import json
 import logging
@@ -87,17 +82,18 @@ def dump_network(page):
             lower = url.lower()
             is_asset = any(x in lower for x in ('/content/', '/scripts/', '/fonts/', '/theme/', '/bundles/'))
             _net_hits.append((resp.request.method, url, status, ct))
-            if not is_asset and _saved_bodies < 80:
-                try:
-                    body = resp.text()
-                    if body and len(body) < 2_000_000:
-                        fname = os.path.join(OUT_DIR, f'net_{_saved_bodies:03d}_{_safe_name(url)}.txt')
-                        with open(fname, 'w') as f:
-                            f.write(body)
-                        _saved_bodies += 1
-                        log.info(f"  [non-asset] {resp.request.method} {status} [{ct}] {url} ({len(body)}b)")
-                except Exception:
-                    pass
+            if not is_asset:
+                log.info(f"  [non-asset] {resp.request.method} {status} [{ct}] {url}")
+                if _saved_bodies < 80:
+                    try:
+                        body = resp.text()
+                        if body and len(body) < 2_000_000:
+                            fname = os.path.join(OUT_DIR, f'net_{_saved_bodies:03d}_{_safe_name(url)}.txt')
+                            with open(fname, 'w') as f:
+                                f.write(body)
+                            _saved_bodies += 1
+                    except Exception:
+                        pass
         except Exception:
             pass
     page.on('response', on_response)
@@ -127,9 +123,6 @@ def fresh_smart_search(page):
 
 
 def js_set_kendo_value(page, el_id: str, value: str, label: str) -> bool:
-    """Set a Kendo widget's value via JS + fire 'change' (triggers cascades).
-    Bypasses Playwright's actionability waits entirely — robust against
-    overlays. Also presses Escape afterward to close any popup left open."""
     ok = False
     try:
         ok = page.evaluate("""(args) => {
@@ -159,74 +152,63 @@ def js_set_kendo_value(page, el_id: str, value: str, label: str) -> bool:
     return ok
 
 
-def js_fill_text(page, el_id: str, value: str, label: str) -> bool:
-    """Set a plain text input's value via JS (dispatch input+change), skipping
-    Playwright's visibility/actionability checks — robust against overlays."""
+CAPTCHA_PATTERNS = re.compile(
+    r"verify you are human|complete the captcha|human verification|"
+    r"unusual traffic|access denied|are you a robot|challenge",
+    re.I)
+
+
+def check_for_bot_challenge(page, label: str) -> bool:
+    """Explicit, isolated check for an ACTIVE bot-check/CAPTCHA challenge
+    page (distinct from the passive reCAPTCHA checkbox we already know is
+    embedded in the form). Per explicit guidance: if this ever fires, log
+    loudly, do not attempt to solve/bypass, do not theorize fingerprinting."""
     try:
-        ok = page.evaluate("""(args) => {
-            const el = document.getElementById(args.elId);
-            if (!el) return false;
-            el.value = args.value;
-            el.dispatchEvent(new Event('input', {bubbles: true}));
-            el.dispatchEvent(new Event('change', {bubbles: true}));
-            return true;
-        }""", {'elId': el_id, 'value': value})
-        log.info(f"[{label}] js_fill_text({el_id!r}, {value!r}) -> {ok}")
-        return ok
+        title = page.title()
+        body = page.evaluate("() => document.body.innerText || ''")
+        hit = CAPTCHA_PATTERNS.search(title) or CAPTCHA_PATTERNS.search(body)
+        if hit:
+            log.error(f"*** [{label}] POSSIBLE BOT-CHECK/CAPTCHA CHALLENGE DETECTED *** "
+                      f"title={title!r} matched={hit.group(0)!r}")
+            snapshot(page, f'BOT_CHALLENGE_{label}')
+            return True
     except Exception as e:
-        log.warning(f"[{label}] js_fill_text error: {e}")
-        return False
+        log.warning(f"[{label}] check_for_bot_challenge error: {e}")
+    return False
 
 
-def probe_casetype_autocomplete(page, location: str, terms):
-    """Type each term into the real CaseType input and see what the Kendo
-    remote filter returns — this is how we find the actual case-type
-    taxonomy (v3 showed the preloaded dataSource is just a placeholder)."""
-    log.info(f"=== CaseType autocomplete probe under Location={location!r} ===")
+def try_main_box(page, value: str):
     fresh_smart_search(page)
-    js_set_kendo_value(page, 'caseCriteria_CourtLocation', location, f'{location}-loc')
-    page.wait_for_timeout(1500)
+    js_set_kendo_value(page, 'caseCriteria_CourtLocation', 'County Clerk', 'loc')
+    page.wait_for_timeout(800)
+    page.locator('input[name*="FileDateStart" i]').first.fill(WINDOW_START.strftime('%m/%d/%Y'))
+    page.keyboard.press('Escape')
+    page.locator('input[name*="FileDateEnd" i]').first.fill(TODAY.strftime('%m/%d/%Y'))
+    page.keyboard.press('Escape')
+    page.locator('#caseCriteria_SearchCriteria').fill(value)
+    page.wait_for_timeout(300)
+    snapshot(page, f'v5_before_{_safe_name(value)}')
 
-    input_sel = 'input[name="caseCriteria.CaseType_input"]'
-    all_found = {}
-    for term in terms:
-        try:
-            el = page.locator(input_sel).first
-            el.click(timeout=5000)
-            el.fill('')
-            el.type(term, delay=60)
-            page.wait_for_timeout(1800)  # let the debounced remote filter fire
-            popup_items = page.evaluate("""() => {
-                const items = Array.from(document.querySelectorAll('.k-list-container .k-item, .k-popup .k-item, ul[id*="CaseType"] li'));
-                return items.map(li => (li.textContent||'').trim()).filter(Boolean);
-            }""")
-            ds_info = page.evaluate("""(elId) => {
-                const el = document.getElementById(elId);
-                if (!el) return null;
-                const $el = jQuery(el);
-                const data = $el.data();
-                for (const key of Object.keys(data)) {
-                    if (!key.startsWith('kendo')) continue;
-                    const widget = data[key];
-                    if (!widget || !widget.dataSource) continue;
-                    try {
-                        return widget.dataSource.data().map(it => it.toJSON ? it.toJSON() : it);
-                    } catch (e) { return {error: String(e)}; }
-                }
-                return null;
-            }""", 'caseCriteria_CaseType')
-            log.info(f"  term={term!r}: popup_items={popup_items} dataSource={ds_info}")
-            if ds_info and isinstance(ds_info, list):
-                for item in ds_info:
-                    key = json.dumps(item, sort_keys=True)
-                    all_found[key] = item
-            page.keyboard.press('Escape')
-        except Exception as e:
-            log.warning(f"  term={term!r}: error {e}")
-    log.info(f"=== {location}: {len(all_found)} DISTINCT case-type items found across all terms ===")
-    for item in all_found.values():
-        log.info(f"    ITEM: {item}")
-    return all_found
+    if check_for_bot_challenge(page, f'before_submit_{value}'):
+        return False, ['BOT_CHALLENGE'], ''
+
+    pre = len(_net_hits)
+    page.locator('#btnSSSubmit').first.click(timeout=10000)
+    page.wait_for_timeout(5000)
+    post = len(_net_hits)
+
+    if check_for_bot_challenge(page, f'after_submit_{value}'):
+        return False, ['BOT_CHALLENGE'], ''
+
+    body = page.evaluate("() => document.body.innerText || ''")
+    err_lines = [l for l in body.split('\n') if
+                 'incorrectly' in l.lower() or 'please enter' in l.lower()
+                 or 'must be' in l.lower() or 'at least' in l.lower()]
+    new_reqs = post - pre
+    log.info(f"[try_main_box value={value!r}] new_requests={new_reqs} err_lines={err_lines}")
+    snapshot(page, f'v5_after_{_safe_name(value)}')
+    success = new_reqs > 0 and not err_lines
+    return success, err_lines, body
 
 
 def main():
@@ -242,64 +224,35 @@ def main():
         page.set_default_timeout(20000)
         dump_network(page)
 
-        terms = ['estate', 'admin', 'probate', 'muniment', 'heirship',
-                 'will', 'guardian', 'mental', 'decedent']
-
-        all_estate_options = {}
-        try:
-            found = probe_casetype_autocomplete(page, 'County Clerk', terms)
-            all_estate_options['County Clerk'] = found
-        except Exception as ex:
-            log.error(f"County Clerk autocomplete probe error: {ex}", exc_info=True)
-
-        try:
-            found = probe_casetype_autocomplete(page, 'District Clerk', terms)
-            all_estate_options['District Clerk'] = found
-        except Exception as ex:
-            log.error(f"District Clerk autocomplete probe error: {ex}", exc_info=True)
-
-        # ── Phase B: minimum wildcard length for NameLast (defensive, isolated) ──
-        wildcard_candidates = ['A*', 'AB*', '%', 'A%']
-        b_success = False
+        candidates = ['A*', 'SMITH*', 'SMITH, *', 'A*, *']
+        success = False
         success_body = ''
-        for wc in wildcard_candidates:
+        winning_value = None
+        for val in candidates:
             try:
-                log.info(f"=== PHASE B: testing NameLast={wc!r} ===")
-                fresh_smart_search(page)
-                js_set_kendo_value(page, 'caseCriteria_CourtLocation', 'County Clerk', 'phaseB-loc')
-                page.wait_for_timeout(1000)
-                js_fill_text(page, 'caseCriteria.FileDateStart', WINDOW_START.strftime('%m/%d/%Y'), 'phaseB-start')
-                js_fill_text(page, 'caseCriteria.FileDateEnd', TODAY.strftime('%m/%d/%Y'), 'phaseB-end')
-                js_fill_text(page, 'caseCriteria_NameLast', wc, 'phaseB-lastname')
-                page.wait_for_timeout(400)
-                snapshot(page, f'phaseB_{wc.replace("*","STAR").replace("%","PCT")}_before')
-
-                pre = len(_net_hits)
-                page.locator('#btnSSSubmit').first.click(timeout=10000)
-                page.wait_for_timeout(4500)
-                post = len(_net_hits)
-                body = page.evaluate("() => document.body.innerText || ''")
-                err_lines = [l for l in body.split('\n') if
-                             'incorrectly' in l.lower() or 'please enter' in l.lower()
-                             or 'must be' in l.lower() or 'at least' in l.lower()
-                             or 'captcha' in l.lower() or 'robot' in l.lower()
-                             or 'verify' in l.lower()]
-                log.info(f"[NameLast={wc!r}] new_requests={post - pre} err_lines={err_lines}")
-                snapshot(page, f'phaseB_{wc.replace("*","STAR").replace("%","PCT")}_after')
-                if post > pre and not err_lines:
-                    log.info(f"*** SUCCESS with NameLast={wc!r} — got a real server round trip! ***")
-                    b_success = True
+                log.info(f"=== Trying main SearchCriteria = {val!r} ===")
+                ok, errs, body = try_main_box(page, val)
+                if ok:
+                    log.info(f"*** SUCCESS with {val!r} ***")
+                    success = True
                     success_body = body
+                    winning_value = val
                     break
-                elif err_lines:
-                    log.info(f"NameLast={wc!r} rejected: {err_lines}")
+                elif errs == ['BOT_CHALLENGE']:
+                    log.error("Stopping wildcard sweep — bot challenge encountered, not a validation issue.")
+                    break
+                else:
+                    log.info(f"{val!r} rejected: {errs}")
             except Exception as ex:
-                log.error(f"PHASE B ({wc}) error: {ex}", exc_info=True)
+                log.error(f"try_main_box({val!r}) error: {ex}", exc_info=True)
 
-        if b_success:
-            log.info("=== SUCCESS BODY (first 300 lines) ===")
+        if success:
+            log.info(f"=== RESULTS after winning query (SearchCriteria={winning_value!r}) ===")
+            log.info(f"Post-submit URL: {page.url}")
+            log.info("=== BODY TEXT (first 300 lines) ===")
             for ln in [l for l in success_body.split('\n') if l.strip()][:300]:
                 log.info(f"  | {ln}")
+
             try:
                 grid_info = page.evaluate("""() => {
                     if (typeof jQuery === 'undefined') return {error: 'no jQuery'};
@@ -307,25 +260,65 @@ def main():
                     if (!g) return {error: 'no kendoGrid'};
                     let rows = [];
                     try { rows = g.dataSource.data().map(it => it.toJSON ? it.toJSON() : it); } catch (e) {}
-                    return {total: g.dataSource.total(), rows: rows.slice(0, 20)};
+                    return {total: g.dataSource.total(), rowCount: rows.length, rows: rows.slice(0, 30)};
                 }""")
-                log.info(f"KENDO GRID: {json.dumps(grid_info, default=str)[:6000]}")
+                log.info(f"KENDO GRID: {json.dumps(grid_info, default=str)[:10000]}")
             except Exception as e:
                 log.warning(f"grid dump error: {e}")
-            snapshot(page, '20_phaseB_success')
+
+            try:
+                tables = page.evaluate("""() => {
+                    return Array.from(document.querySelectorAll('table')).map(t => ({
+                        headers: Array.from(t.querySelectorAll('th')).map(h => (h.textContent||'').trim()),
+                        rowCount: t.querySelectorAll('tr').length,
+                        sample: Array.from(t.querySelectorAll('tr')).slice(1,20).map(
+                            tr => Array.from(tr.querySelectorAll('td')).map(td => (td.textContent||'').trim())
+                        ),
+                    }));
+                }""")
+                for i, t in enumerate(tables):
+                    if t['rowCount'] <= 1:
+                        continue
+                    log.info(f"TABLE {i}: headers={t['headers']} rowCount={t['rowCount']}")
+                    for r in t['sample']:
+                        log.info(f"  ROW: {r}")
+            except Exception as e:
+                log.warning(f"table dump error: {e}")
+
+            try:
+                case_links = page.evaluate("""() => {
+                    return Array.from(document.querySelectorAll('a[href]'))
+                        .map(a => ({href: a.getAttribute('href'), text:(a.textContent||'').trim()}))
+                        .filter(a => a.href && a.href !== '#' && !a.href.startsWith('javascript'))
+                        .slice(0, 30);
+                }""")
+                log.info(f"Real links on results page ({len(case_links)}): {case_links}")
+                if case_links:
+                    href = case_links[0]['href']
+                    detail_url = href if href.startswith('http') else (
+                        f"https://portal-txbexar.tylertech.cloud{href}" if href.startswith('/') else None)
+                    if detail_url:
+                        log.info(f"Opening case detail -> {detail_url}")
+                        page.goto(detail_url, wait_until='networkidle')
+                        page.wait_for_timeout(2500)
+                        if not check_for_bot_challenge(page, 'case_detail'):
+                            snapshot(page, '30_case_detail')
+                            detail_body = page.evaluate("() => document.body.innerText || ''")
+                            log.info("=== CASE DETAIL BODY TEXT (first 350 lines) ===")
+                            for ln in [l for l in detail_body.split('\n') if l.strip()][:350]:
+                                log.info(f"  | {ln}")
+            except Exception as e:
+                log.warning(f"case detail phase error: {e}")
         else:
-            log.info("=== PHASE B: no wildcard candidate got past client validation ===")
+            log.info("=== No candidate got past validation / a bot challenge was hit — see logs above ===")
 
         log.info(f"=== NETWORK: {len(_net_hits)} total responses touching tylertech ===")
         with open(os.path.join(OUT_DIR, 'network_summary.json'), 'w') as f:
             json.dump([{'method': m, 'url': u, 'status': s, 'content_type': c}
                        for m, u, s, c in _net_hits], f, indent=2)
-        with open(os.path.join(OUT_DIR, 'estate_options_found.json'), 'w') as f:
-            json.dump({loc: list(items.values()) for loc, items in all_estate_options.items()},
-                       f, indent=2, default=str)
 
         browser.close()
-        log.info("Probe v4 complete.")
+        log.info("Probe v5 complete.")
 
 
 if __name__ == '__main__':
