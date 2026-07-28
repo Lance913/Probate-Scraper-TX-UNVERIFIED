@@ -1,0 +1,35 @@
+name: Reset Probate Sheet
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type RESET (all caps) to wipe the Probate Leads + Probate Daily Counts tabs'
+        required: true
+        default: ''
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Guard confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "RESET" ]; then
+            echo "::error::You must type RESET (exact, all caps) to run this. Aborting."
+            exit 1
+          fi
+
+      - name: Reset sheet
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python main.py --reset-sheet

@@ -1,0 +1,112 @@
+name: Daily Probate Scraper (9 TX counties)
+
+on:
+  schedule:
+    - cron: '45 13 * * *'   # ~7:45 AM CST — offset from the exact hour and from
+                             # the sister foreclosure repo's run; GH cron is
+                             # best-effort and commonly fires 1-3h late at :00.
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to scrape (YYYY-MM-DD). Leave blank for today.'
+        required: false
+        default: ''
+      counties:
+        description: 'Counties: collin dallas ellis bexar tarrant denton johnson harris travis (blank = all wired-in)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run? (true/false)'
+        required: false
+        default: 'false'
+
+jobs:
+  # ── 1. Build the county matrix from the input (default: all wired-in) ───────
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        run: |
+          COUNTIES="${{ github.event.inputs.counties }}"
+          if [ -z "$COUNTIES" ]; then COUNTIES="collin dallas ellis bexar tarrant denton johnson harris travis"; fi
+          ARR=$(echo "$COUNTIES" | tr ' ' '\n' | grep -v '^$' | jq -R . | jq -cs .)
+          echo "matrix=$ARR" >> "$GITHUB_OUTPUT"
+          echo "Matrix: $ARR"
+
+  # ── 2. Scrape each county on its own runner (parallel), dump to a JSON artifact
+  scrape:
+    needs: setup
+    if: ${{ needs.setup.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        county: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system OCR deps (tesseract + poppler)
+        run: |
+          timeout 60 sudo apt-get update -o Acquire::Retries=3 || true
+          sudo apt-get install -y tesseract-ocr poppler-utils
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # Always (re)install the browser. A cache that "hits" with a stale/mismatched
+      # Chromium build silently loses whole counties ("Executable doesn't exist"),
+      # so reliability wins over the small caching speedup.
+      - name: Install Playwright Chromium + system deps
+        run: playwright install --with-deps chromium
+
+      - name: Scrape ${{ matrix.county }}
+        run: |
+          ARGS=""
+          DATE="${{ github.event.inputs.date }}"
+          if [ -n "$DATE" ]; then ARGS="--date $DATE"; fi
+          python main.py --counties ${{ matrix.county }} $ARGS --output records-${{ matrix.county }}.json
+
+      - name: Upload county records
+        uses: actions/upload-artifact@v4
+        with:
+          name: records-${{ matrix.county }}
+          path: records-${{ matrix.county }}.json
+          if-no-files-found: warn
+
+  # ── 3. Collate all county artifacts and write to the Sheet ONCE (no races) ──
+  collate:
+    needs: scrape
+    if: ${{ always() && needs.setup.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download all county artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Write to Google Sheets
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          ARGS="--from-json artifacts/**/records-*.json"
+          DRY="${{ github.event.inputs.dry_run }}"
+          if [ "$DRY" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python main.py $ARGS
