@@ -1,6 +1,21 @@
 name: Probe Bexar Portal
 
+# push-triggered (not workflow_dispatch): workflow_dispatch requires the
+# workflow file to already be registered on the default branch before it can
+# be dispatched at all (a hard GitHub platform limitation, not a permissions
+# issue) — but this repo intentionally has no branch-protection escape hatch
+# for pushing straight to main (another agent works this same repo
+# concurrently on its own branch; direct-to-main is reserved for the
+# human-reviewed PR merge, per SYSTEM_GUIDE.md §2.3). A push trigger fires
+# immediately on the branch that introduces it, so probe iteration stays
+# entirely on this feature branch. Path-filtered so routine scraper commits
+# on this branch don't re-trigger it once the probe phase is done.
 on:
+  push:
+    branches: ['add-bexar-probate-scraper']
+    paths:
+      - 'probe_bexar.py'
+      - '.github/workflows/probe_bexar.yml'
   workflow_dispatch:
 
 jobs:
