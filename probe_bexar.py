@@ -1,65 +1,53 @@
 """
-Probe v2 — Bexar County Tyler Odyssey Portal (portal-txbexar.tylertech.cloud).
+Probe v3 — Bexar County Tyler Odyssey Portal (portal-txbexar.tylertech.cloud).
 
-Ground truth from v1 (confirmed, not guessed):
-  * Product: "Bexar County Justice Portal" (Tyler Odyssey Portal). Smart
-    Search lives at /Portal/Home/Dashboard/29.
-  * The whole form is Kendo UI (Telerik) widgets bound to hidden ASP.NET
-    MVC-style model fields under `caseCriteria.*` — there are ZERO native
-    <select> elements. "Filter by Location", "Filter by Search Type",
-    "Filter by Case Type", "Filter by Case Status", "Filter by Judicial
-    Officer" are all Kendo dropdown/multiselect widgets rendered from JS,
-    not clickable-by-label-text (v1's label clicks 30s-timed-out).
-  * Real form fields confirmed: caseCriteria.NameLast/NameFirst/NameMiddle,
-    caseCriteria.CourtLocation, caseCriteria.CaseType, caseCriteria.CaseStatus,
-    caseCriteria.FileDateStart, caseCriteria.FileDateEnd,
-    caseCriteria.JudicialOfficer, caseCriteria.SearchCriteria (the single
-    "record number or name" box), caseCriteria.SearchByPartyName/NickName/
-    BusinessName/UseSoundex (radio-like hidden flags), caseCriteria.SearchCases
-    (checked by default). Real submit control: input#btnSSSubmit[type=submit].
-  * A Google reCAPTCHA v2 iframe + a Settings.CaptchaEnabled hidden field are
-    present on the page — v1 didn't check the actual value. UNVERIFIED
-    whether it blocks anonymous searches; this probe checks the value and
-    watches for a captcha-related error after a real submit attempt.
-  * v1's submit click matched the wrong element (hit "Smart Search" heading
-    link, not the real button) and what got captured afterward was a leftover
-    Kendo DatePicker calendar popup (table headers Su/Mo/Tu/.../Sa, day-number
-    links) rendered on top of/instead of results — NOT actual search results.
-    No JSON/XHR appeared in the network log at all in v1, confirming the real
-    search never actually fired.
+Ground truth from v1+v2 (confirmed):
+  * "Bexar County Justice Portal" (Tyler Odyssey Portal). Smart Search at
+    /Portal/Home/Dashboard/29. Kendo UI (Telerik) widgets throughout, no
+    native <select>. Real submit button: input#btnSSSubmit[type=submit].
+  * Settings.CaptchaEnabled = 'True' (a visible reCAPTCHA v2 checkbox IS on
+    the page) — but v2's submit attempt never even reached the server: it was
+    blocked by pure CLIENT-SIDE validation ("One or more fields was completed
+    incorrectly: Please enter a value for search criteria.") with ZERO new
+    network requests fired. So captcha enforcement is still unverified — we
+    haven't gotten far enough to test it.
+  * caseCriteria_CaseType is a kendoComboBox (SINGLE-select, not multi) whose
+    dataSource had exactly ONE placeholder option ("All Offices Case Search")
+    while caseCriteria_CourtLocation = 'All Locations' (the default). This
+    strongly suggests CaseType CASCADES from CourtLocation, whose only real
+    options are: All Locations / County Clerk / District Clerk / Justice of
+    the Peace (no explicit "Probate Court" location — Bexar's County Clerk is
+    the documented custodian of probate case records per public research, so
+    County Clerk is the best-guess Location for estates, but UNVERIFIED).
 
-This probe fixes all of the above:
-  1. Introspects EVERY Kendo widget on the page via its JS API
-     ($(el).data('kendoXxx')) instead of clicking — dumps widget type + full
-     dataSource for list-type widgets (Location, Case Type, Case Status,
-     Judicial Officer options), which should reveal the real case-type
-     taxonomy (is "Estates" really a top-level category? what are its
-     children? does it include Guardianship/Mental Health?).
-  2. Logs hidden-input VALUES too (v1 only logged id/name), specifically to
-     read Settings.CaptchaEnabled.
-  3. Fills File Date Start/End, then presses Escape to close any Kendo
-     DatePicker popup before continuing (v1 left one open).
-  4. Clicks the exact real submit control (#btnSSSubmit), not a fuzzy
-     text-based selector.
-  5. Polls for a real results signal after submit (Kendo Grid widget
-     appearing with data, OR an explicit no-results/error/captcha message)
-     instead of one fixed wait — SYSTEM_GUIDE.md bug #1 (slow tables read as
-     empty).
-  6. If a Kendo Grid widget is found, dumps its dataSource.data() directly
-     via JS (structured JSON, no DOM-scraping guesswork) — this is likely
-     the actual results delivery mechanism for this product.
-  7. Saves the raw text of smartSearchPortlet.js (and other ePortal scripts)
-     as artifacts AND greps them in-log for endpoint URLs / "CaseType" /
-     "recaptcha" / "Estates" references, since reading the client's own
-     source is more reliable than guessing its network contract.
-  8. Only follows case-detail links that look like real hrefs (v1 crashed
-     trying to Page.goto('#')).
+This probe:
+  1. For each real Location value (County Clerk / District Clerk / Justice of
+     the Peace), sets it via the Kendo widget API + fires 'change' (the
+     documented way to trigger a Kendo cascade), waits, then dumps CaseType's
+     dataSource again — to find the real case-type taxonomy and confirm/deny
+     whether "Estates" (and its children, and whether Guardianship/Mental
+     Health share the same bucket) lives under County Clerk.
+  2. Tries to get a real search past the required-field client validation:
+     first the cheapest universal wildcard ('*' alone) in the main search
+     box, and if that's rejected, a single-letter wildcard ('A*') in the
+     dedicated Last Name field instead — to learn the real minimum-length
+     rule for this deployment (needed to decide the query strategy: one query
+     per case-type with a universal wildcard, vs. an A-Z name sweep).
+  3. Whichever gets past validation, sets File Date Start/End wide, sets
+     CaseType to whatever estate-hinting option was found in step 1 (if any),
+     submits for real, and — critically — checks whether a real server round
+     trip happens and whether captcha blocks it.
+  4. On any real result, dumps the Kendo Grid's dataSource.data() directly
+     (structured JSON) and/or the results <table>, and opens a case detail
+     page if a usable link/case number appears, dumping its Party Information
+     section verbatim (the OCR-vs-structured-data question).
 """
 import json
 import logging
 import os
 import re
 import sys
+import time
 from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -76,10 +64,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 TODAY = date(2026, 7, 28)
 WINDOW_START = TODAY - timedelta(days=730)
 
-_net_hits = []   # (method, url, status, content_type)
+_net_hits = []
 _saved_bodies = 0
-
-_SCRIPT_SAVE_PATTERNS = ('smartsearchportlet', 'main.js', 'eportal.js')
 
 
 def _safe_name(url: str) -> str:
@@ -97,51 +83,23 @@ def dump_network(page):
             status = resp.status
             _net_hits.append((resp.request.method, url, status, ct))
             lower = url.lower()
-            is_json = 'json' in ct.lower()
-            is_target_script = any(p in lower for p in _SCRIPT_SAVE_PATTERNS)
-            if (is_json or is_target_script) and _saved_bodies < 80:
+            skip_static = any(x in ct.lower() for x in ('css', 'image', 'font')) and 'json' not in ct.lower()
+            is_asset_path = any(x in lower for x in ('/content/', '/scripts/', '/fonts/', '/theme/'))
+            if not skip_static and not is_asset_path and _saved_bodies < 60:
                 try:
                     body = resp.text()
                     if body and len(body) < 2_000_000:
-                        ext = 'json' if is_json else 'js'
-                        fname = os.path.join(OUT_DIR, f'net_{_saved_bodies:03d}_{_safe_name(url)}.{ext}')
+                        fname = os.path.join(OUT_DIR, f'net_{_saved_bodies:03d}_{_safe_name(url)}.txt')
                         with open(fname, 'w') as f:
                             f.write(body)
                         _saved_bodies += 1
-                        if is_target_script:
-                            _grep_script(url, body)
+                        log.info(f"  [captured non-static] {resp.request.method} {status} [{ct}] {url} "
+                                  f"({len(body)} bytes, saved to {os.path.basename(fname)})")
                 except Exception:
                     pass
         except Exception:
             pass
     page.on('response', on_response)
-
-
-def _grep_script(url: str, body: str):
-    """Print lines from a client script that hint at the search API contract."""
-    keywords = ['url:', 'ajax', 'CaseType', 'recaptcha', 'Recaptcha', 'Estates',
-                'transport', 'read:', 'SmartSearch', 'dataSource', '.get(', '.post(']
-    lines = body.split('\n')
-    hits = [(i, ln) for i, ln in enumerate(lines)
-            if any(k in ln for k in keywords)]
-    log.info(f"=== SCRIPT GREP {url} ({len(lines)} lines, {len(hits)} keyword hits) ===")
-    for i, ln in hits[:120]:
-        log.info(f"  L{i}: {ln.strip()[:200]}")
-
-
-def dismiss_overlays(page, label=''):
-    for sel in ['button:has-text("Agree")', 'button:has-text("Accept")',
-                'button:has-text("I Agree")', 'button:has-text("Continue")',
-                'button:has-text("OK")', '.modal button.close',
-                '[aria-label="Close"]']:
-        try:
-            el = page.locator(sel).first
-            if el.count() > 0 and el.is_visible():
-                log.info(f"[{label}] Dismissing overlay via {sel!r}")
-                el.click()
-                page.wait_for_timeout(500)
-        except Exception:
-            pass
 
 
 def snapshot(page, tag: str):
@@ -158,130 +116,66 @@ def snapshot(page, tag: str):
         log.warning(f"[{tag}] html save failed: {e}")
 
 
-def dump_form(page, label):
-    info = page.evaluate("""() => {
-        const out = {inputs: [], selects: [], buttons: [], checkboxes: []};
-        for (const el of document.querySelectorAll('input')) {
-            const t = (el.type||'').toLowerCase();
-            const rec = {type: t, id: el.id, name: el.name,
-                         placeholder: el.placeholder, aria: el.getAttribute('aria-label'),
-                         value: el.value, checked: el.checked};
-            if (t === 'checkbox' || t === 'radio') out.checkboxes.push(rec);
-            else out.inputs.push(rec);
-        }
-        return out;
-    }""")
-    log.info(f"=== {label}: {len(info['inputs'])} text/hidden inputs, {len(info['checkboxes'])} checkboxes ===")
-    for i in info['inputs']:
-        log.info(f"  INPUT type={i['type']} id={i['id']!r} name={i['name']!r} "
-                  f"value={i['value']!r} placeholder={i['placeholder']!r}")
-    for c in info['checkboxes'][:150]:
-        log.info(f"  {c['type'].upper()} id={c['id']!r} name={c['name']!r} "
-                  f"value={c['value']!r} checked={c['checked']}")
-
-
-def dump_kendo_widgets(page, label):
-    """Introspect every Kendo widget on the page via its JS API — the
-    reliable way to read dropdown/multiselect options on this product,
-    since they're not native <select> elements and DOM clicking on them
-    timed out in v1."""
+def fresh_smart_search(page):
+    page.goto(f"{BASE}/Home/Dashboard/29", wait_until='networkidle')
+    page.wait_for_timeout(1200)
     try:
-        widgets = page.evaluate("""() => {
-            if (typeof jQuery === 'undefined') return {error: 'no jQuery'};
-            const out = [];
-            const all = jQuery('[data-role], input, div, span').toArray();
-            const seen = new Set();
-            for (const el of all) {
-                const $el = jQuery(el);
-                const data = $el.data();
-                if (!data) continue;
-                for (const key of Object.keys(data)) {
-                    if (!key.startsWith('kendo')) continue;
-                    const widget = data[key];
-                    if (!widget || typeof widget !== 'object') continue;
-                    const uid = widget._guid || (el.id + '|' + key);
-                    if (seen.has(uid)) continue;
-                    seen.add(uid);
-                    const rec = {
-                        widgetType: key,
-                        elId: el.id || '',
-                        elName: el.getAttribute('name') || '',
-                        options: null,
-                        value: null,
-                    };
-                    try { rec.value = widget.value ? widget.value() : null; } catch (e) {}
-                    try {
-                        if (widget.dataSource && widget.dataSource.data) {
-                            const items = widget.dataSource.data();
-                            rec.options = items.slice(0, 300).map(it => {
-                                try { return it.toJSON ? it.toJSON() : it; } catch (e) { return String(it); }
-                            });
-                            rec.optionCount = items.length;
-                        }
-                    } catch (e) { rec.dsError = String(e); }
-                    out.push(rec);
-                }
+        page.locator('a:has-text("Advanced")').first.click()
+        page.wait_for_timeout(800)
+    except Exception:
+        pass
+
+
+def set_kendo_value_and_cascade(page, el_id: str, value: str, label: str):
+    """Set a Kendo widget's value via its JS API and fire 'change' — the
+    documented way to trigger cascading dependents (e.g. CaseType depends on
+    CourtLocation). Returns True if the widget was found."""
+    ok = page.evaluate("""(args) => {
+        const el = document.getElementById(args.elId);
+        if (!el) return false;
+        const $el = jQuery(el);
+        const data = $el.data();
+        for (const key of Object.keys(data)) {
+            if (!key.startsWith('kendo')) continue;
+            const widget = data[key];
+            if (widget && widget.value) {
+                widget.value(args.value);
+                widget.trigger('change');
+                return true;
             }
-            return out;
-        }""")
-        if isinstance(widgets, dict) and widgets.get('error'):
-            log.warning(f"[{label}] Kendo introspection failed: {widgets['error']}")
-            return
-        log.info(f"=== {label}: {len(widgets)} Kendo widgets found ===")
-        for w in widgets:
-            log.info(f"  WIDGET type={w['widgetType']} elId={w['elId']!r} elName={w['elName']!r} "
-                      f"value={w['value']!r} optionCount={w.get('optionCount')}")
-            if w.get('options'):
-                for opt in w['options'][:80]:
-                    log.info(f"      OPT: {opt}")
-            if w.get('dsError'):
-                log.info(f"      dsError: {w['dsError']}")
-    except Exception as e:
-        log.error(f"[{label}] dump_kendo_widgets error: {e}", exc_info=True)
+        }
+        return false;
+    }""", {'elId': el_id, 'value': value})
+    log.info(f"[{label}] set_kendo_value_and_cascade({el_id!r}, {value!r}) -> found_widget={ok}")
+    return ok
 
 
-def dump_body_text(page, label, max_lines=250):
-    try:
-        body_text = page.evaluate("() => document.body.innerText || ''")
-    except Exception as e:
-        log.warning(f"[{label}] body text failed: {e}")
-        return ''
-    lines = [l for l in body_text.split('\n') if l.strip()]
-    log.info(f"=== {label}: BODY TEXT ({len(lines)} non-blank lines, showing up to {max_lines}) ===")
-    for ln in lines[:max_lines]:
-        log.info(f"  | {ln}")
-    return body_text
-
-
-def wait_for_results_or_message(page, timeout_ms=25000):
-    """Poll for a real results signal: a Kendo Grid with rows, OR explicit
-    no-results/error/captcha text. Returns a dict describing what happened.
-    Modeled on the reference system's _wait_for_results (SYSTEM_GUIDE.md bug
-    #1 — a slow render must not be read as 0 results)."""
-    import time
-    deadline = time.monotonic() + timeout_ms / 1000
-    while time.monotonic() < deadline:
-        state = page.evaluate("""() => {
-            let gridRows = -1;
-            try {
-                if (typeof jQuery !== 'undefined') {
-                    const g = jQuery('[data-role="grid"]').data('kendoGrid');
-                    if (g) gridRows = g.dataSource.data().length;
-                }
-            } catch (e) {}
-            const body = (document.body.innerText || '');
-            const noRes = /no results|no records|0 results|did not match|no matches/i.test(body);
-            const captcha = /captcha|verify you are human|i'm not a robot|are you a robot/i.test(body);
-            const err = /error occurred|something went wrong|unable to complete/i.test(body);
-            const tableRows = document.querySelectorAll('table tr').length;
-            return {gridRows, noRes, captcha, err, tableRows};
-        }""")
-        if state['gridRows'] > 0:
-            return {'status': 'grid_has_rows', **state}
-        if state['noRes'] or state['captcha'] or state['err']:
-            return {'status': 'explicit_message', **state}
-        page.wait_for_timeout(500)
-    return {'status': 'timeout'}
+def dump_one_widget_datasource(page, el_id: str, label: str):
+    info = page.evaluate("""(elId) => {
+        const el = document.getElementById(elId);
+        if (!el) return {error: 'no element'};
+        const $el = jQuery(el);
+        const data = $el.data();
+        for (const key of Object.keys(data)) {
+            if (!key.startsWith('kendo')) continue;
+            const widget = data[key];
+            if (!widget) continue;
+            let items = [];
+            try { items = widget.dataSource.data().map(it => it.toJSON ? it.toJSON() : it); } catch (e) {}
+            let value = null;
+            try { value = widget.value(); } catch (e) {}
+            return {widgetType: key, value, optionCount: items.length, options: items.slice(0, 200)};
+        }
+        return {error: 'no kendo widget'};
+    }""", el_id)
+    if info.get('error'):
+        log.warning(f"[{label}] {el_id}: {info['error']}")
+        return info
+    log.info(f"[{label}] {el_id}: widgetType={info['widgetType']} value={info['value']!r} "
+              f"optionCount={info['optionCount']}")
+    for opt in info['options']:
+        log.info(f"    OPT: {opt}")
+    return info
 
 
 def main():
@@ -297,121 +191,161 @@ def main():
         page.set_default_timeout(30000)
         dump_network(page)
 
-        # ── Phase 1+2: Smart Search dashboard ──────────────────────────────
+        # ── Phase A: cascade test — does CaseType depend on CourtLocation? ────
+        estate_hits = {}   # location -> [ (Text, Value) ... ] that look estate-related
+        for loc_value in ['County Clerk', 'District Clerk', 'Justice of the Peace']:
+            try:
+                log.info(f"=== PHASE A: Location={loc_value!r} ===")
+                fresh_smart_search(page)
+                set_kendo_value_and_cascade(page, 'caseCriteria_CourtLocation', loc_value, loc_value)
+                page.wait_for_timeout(2000)  # let any cascade AJAX resolve
+                info = dump_one_widget_datasource(page, 'caseCriteria_CaseType', f'CaseType under {loc_value}')
+                opts = info.get('options') or []
+                hints = ['ESTATE', 'ADMIN', 'MUNIMENT', 'HEIRSHIP', 'PROBATE', 'WILL',
+                         'GUARDIAN', 'MENTAL', 'DECEDENT', 'TESTAMENTARY']
+                hits = [o for o in opts if any(h in json.dumps(o).upper() for h in hints)]
+                if hits:
+                    estate_hits[loc_value] = hits
+                    log.info(f"  >>> {loc_value}: {len(hits)} probate/estate/guardianship-hinting case types: {hits}")
+            except Exception as ex:
+                log.error(f"PHASE A ({loc_value}) error: {ex}", exc_info=True)
+        log.info(f"=== PHASE A SUMMARY: estate-hinting case types by location: "
+                  f"{ {k: len(v) for k, v in estate_hits.items()} } ===")
+
+        # ── Phase B: find the minimum viable "search criteria" input ──────────
+        # Fresh page, try the cheapest universal wildcard first.
         try:
-            log.info(f"PHASE 1-2: GET {BASE}/Home/Dashboard/29 (Smart Search)")
-            page.goto(f"{BASE}/", wait_until='networkidle')
-            page.wait_for_timeout(600)
-            dismiss_overlays(page, 'landing')
-            page.goto(f"{BASE}/Home/Dashboard/29", wait_until='networkidle')
+            log.info("=== PHASE B: minimum search-criteria wildcard test ===")
+            fresh_smart_search(page)
+            best_location = next(iter(estate_hits), 'County Clerk')
+            set_kendo_value_and_cascade(page, 'caseCriteria_CourtLocation', best_location, 'phaseB-location')
             page.wait_for_timeout(1500)
-            dismiss_overlays(page, 'smartsearch')
-            log.info(f"Smart Search title: {page.title()!r} url={page.url}")
-        except Exception as ex:
-            log.error(f"PHASE 1-2 error: {ex}", exc_info=True)
 
-        # ── Phase 3: expand Advanced, dump hidden-input values (captcha flag) ──
-        try:
-            page.locator('a:has-text("Advanced")').first.click()
-            page.wait_for_timeout(1000)
-            dump_form(page, "Smart Search (Advanced expanded, WITH values)")
-        except Exception as ex:
-            log.error(f"PHASE 3 error: {ex}", exc_info=True)
+            # Pick a case type to test with, if we found one; else leave default.
+            chosen_case_type = None
+            if estate_hits.get(best_location):
+                chosen_case_type = estate_hits[best_location][0].get('Text') or estate_hits[best_location][0].get('Value')
+                set_kendo_value_and_cascade(page, 'caseCriteria_CaseType', chosen_case_type, 'phaseB-casetype')
+                page.wait_for_timeout(500)
+            log.info(f"Phase B using location={best_location!r} case_type={chosen_case_type!r}")
 
-        # ── Phase 4: introspect every Kendo widget (Location / Case Type / etc) ──
-        try:
-            dump_kendo_widgets(page, "Smart Search widgets (before any interaction)")
-            snapshot(page, '01_smartsearch_advanced')
-        except Exception as ex:
-            log.error(f"PHASE 4 error: {ex}", exc_info=True)
-
-        # ── Phase 5: fill date range, close any stray calendar popup ──────
-        try:
-            log.info("PHASE 5: filling File Date Start/End")
             start_el = page.locator('input[name*="FileDateStart" i]').first
             end_el = page.locator('input[name*="FileDateEnd" i]').first
             if start_el.count() > 0:
                 start_el.fill(WINDOW_START.strftime('%m/%d/%Y'))
                 page.keyboard.press('Escape')
-                page.wait_for_timeout(300)
             if end_el.count() > 0:
                 end_el.fill(TODAY.strftime('%m/%d/%Y'))
                 page.keyboard.press('Escape')
-                page.wait_for_timeout(300)
-            # Click a neutral heading to force-blur/close any lingering Kendo popup.
-            try:
-                page.locator('text=Case Search Criteria').first.click(timeout=3000)
-            except Exception:
-                pass
             page.wait_for_timeout(300)
-            snapshot(page, '02_dates_filled')
+
+            def try_submit(criteria_value: str, field: str):
+                """field: 'main' (combined SearchCriteria box) or 'lastname'."""
+                if field == 'main':
+                    page.locator('#caseCriteria_SearchCriteria').fill(criteria_value)
+                else:
+                    page.locator('#caseCriteria_NameLast').fill(criteria_value)
+                snapshot(page, f'phaseB_before_{field}_{criteria_value.replace("*","STAR")}')
+                pre_count = len(_net_hits)
+                page.locator('#btnSSSubmit').first.click()
+                page.wait_for_timeout(4000)
+                post_count = len(_net_hits)
+                body = page.evaluate("() => document.body.innerText || ''")
+                err_lines = [l for l in body.split('\n') if 'incorrectly' in l.lower()
+                             or 'please enter' in l.lower() or 'must be' in l.lower()
+                             or 'at least' in l.lower() or 'captcha' in l.lower()
+                             or 'robot' in l.lower()]
+                log.info(f"[try_submit field={field} value={criteria_value!r}] "
+                          f"new_network_requests={post_count - pre_count} error_lines={err_lines}")
+                return post_count - pre_count, err_lines, body
+
+            # Attempt 1: universal wildcard in the main box.
+            delta, errs, body = try_submit('*', 'main')
+            success = delta > 0 and not errs
+            if not success:
+                log.info("Universal '*' in main box did not clearly pass — trying 'A*' in Last Name field.")
+                fresh_smart_search(page)
+                set_kendo_value_and_cascade(page, 'caseCriteria_CourtLocation', best_location, 'phaseB2-location')
+                page.wait_for_timeout(1500)
+                if chosen_case_type:
+                    set_kendo_value_and_cascade(page, 'caseCriteria_CaseType', chosen_case_type, 'phaseB2-casetype')
+                    page.wait_for_timeout(500)
+                start_el = page.locator('input[name*="FileDateStart" i]').first
+                end_el = page.locator('input[name*="FileDateEnd" i]').first
+                if start_el.count() > 0:
+                    start_el.fill(WINDOW_START.strftime('%m/%d/%Y')); page.keyboard.press('Escape')
+                if end_el.count() > 0:
+                    end_el.fill(TODAY.strftime('%m/%d/%Y')); page.keyboard.press('Escape')
+                page.wait_for_timeout(300)
+                delta, errs, body = try_submit('A*', 'lastname')
+                success = delta > 0 and not errs
+
+            log.info(f"=== PHASE B RESULT: success={success} last_delta={delta} last_errors={errs} ===")
+            snapshot(page, '10_phaseB_final')
+            log.info("=== PHASE B FINAL BODY TEXT (first 300 lines) ===")
+            for ln in [l for l in body.split('\n') if l.strip()][:300]:
+                log.info(f"  | {ln}")
+
+            # ── Phase C: if we got real results, dump them thoroughly ─────────
+            if success:
+                grid_info = page.evaluate("""() => {
+                    if (typeof jQuery === 'undefined') return {error: 'no jQuery'};
+                    const g = jQuery('[data-role="grid"]').data('kendoGrid');
+                    if (!g) return {error: 'no kendoGrid found'};
+                    let rows = [];
+                    try { rows = g.dataSource.data().map(it => it.toJSON ? it.toJSON() : it); } catch (e) {}
+                    return {total: g.dataSource.total(), rowCount: rows.length, rows: rows.slice(0, 25)};
+                }""")
+                log.info(f"KENDO GRID: {json.dumps(grid_info, default=str)[:8000]}")
+
+                tables = page.evaluate("""() => {
+                    return Array.from(document.querySelectorAll('table')).map(t => ({
+                        headers: Array.from(t.querySelectorAll('th')).map(h => (h.textContent||'').trim()),
+                        rowCount: t.querySelectorAll('tr').length,
+                        sample: Array.from(t.querySelectorAll('tr')).slice(1,15).map(
+                            tr => Array.from(tr.querySelectorAll('td')).map(td => (td.textContent||'').trim())
+                        ),
+                    }));
+                }""")
+                for i, t in enumerate(tables):
+                    if t['rowCount'] <= 1:
+                        continue
+                    log.info(f"TABLE {i}: headers={t['headers']} rowCount={t['rowCount']}")
+                    for r in t['sample']:
+                        log.info(f"  ROW: {r}")
+
+                case_links = page.evaluate("""() => {
+                    return Array.from(document.querySelectorAll('a[href]'))
+                        .map(a => ({href: a.getAttribute('href'), text:(a.textContent||'').trim()}))
+                        .filter(a => a.href && a.href !== '#' && !a.href.startsWith('javascript'))
+                        .slice(0, 30);
+                }""")
+                log.info(f"Real links on results page ({len(case_links)}): {case_links}")
+
+                if case_links:
+                    href = case_links[0]['href']
+                    detail_url = href if href.startswith('http') else (
+                        f"https://portal-txbexar.tylertech.cloud{href}" if href.startswith('/') else None)
+                    if detail_url:
+                        log.info(f"PHASE D: opening case detail -> {detail_url}")
+                        page.goto(detail_url, wait_until='networkidle')
+                        page.wait_for_timeout(2500)
+                        snapshot(page, '11_case_detail')
+                        detail_body = page.evaluate("() => document.body.innerText || ''")
+                        log.info("=== CASE DETAIL BODY TEXT (first 300 lines) ===")
+                        for ln in [l for l in detail_body.split('\n') if l.strip()][:300]:
+                            log.info(f"  | {ln}")
+
         except Exception as ex:
-            log.error(f"PHASE 5 error: {ex}", exc_info=True)
+            log.error(f"PHASE B/C error: {ex}", exc_info=True)
 
-        # ── Phase 6: submit via the REAL button, then poll for real results ──
-        try:
-            log.info("PHASE 6: clicking the real #btnSSSubmit control")
-            btn = page.locator('#btnSSSubmit').first
-            log.info(f"btnSSSubmit count={btn.count()} visible={btn.is_visible() if btn.count() else 'n/a'}")
-            btn.click()
-            result = wait_for_results_or_message(page, timeout_ms=25000)
-            log.info(f"Post-submit wait result: {result}")
-            page.wait_for_timeout(1500)
-            log.info(f"Post-submit URL: {page.url}")
-            snapshot(page, '03_after_submit')
-            body_text = dump_body_text(page, "Results page", max_lines=300)
-
-            dump_kendo_widgets(page, "Widgets AFTER submit (looking for kendoGrid)")
-
-            # Raw <table> dump too, in case results render as plain HTML.
-            tables = page.evaluate("""() => {
-                return Array.from(document.querySelectorAll('table')).map(t => ({
-                    headers: Array.from(t.querySelectorAll('th')).map(h => (h.textContent||'').trim()),
-                    rowCount: t.querySelectorAll('tr').length,
-                    sample: Array.from(t.querySelectorAll('tr')).slice(1,8).map(
-                        tr => Array.from(tr.querySelectorAll('td')).map(td => (td.textContent||'').trim())
-                    ),
-                }));
-            }""")
-            for i, t in enumerate(tables):
-                log.info(f"TABLE {i}: headers={t['headers']} rowCount={t['rowCount']}")
-                for r in t['sample']:
-                    log.info(f"  ROW: {r}")
-
-            # Real hrefs only (skip '#'/empty) for a potential case-detail drill-in.
-            case_links = page.evaluate("""() => {
-                return Array.from(document.querySelectorAll('a[href]'))
-                    .map(a => ({href: a.getAttribute('href'), text:(a.textContent||'').trim()}))
-                    .filter(a => a.href && a.href !== '#' && !a.href.startsWith('javascript'))
-                    .slice(0, 30);
-            }""")
-            log.info(f"Real (non-#) links on results page ({len(case_links)}):")
-            for cl in case_links:
-                log.info(f"  LINK text={cl['text']!r} href={cl['href']!r}")
-
-        except Exception as ex:
-            log.error(f"PHASE 6 error: {ex}", exc_info=True)
-
-        # ── Final: network summary ──────────────────────────────────────────
-        log.info(f"=== NETWORK: {len(_net_hits)} responses touching tylertech ===")
-        by_ct = {}
-        for method, url, status, ct in _net_hits:
-            by_ct.setdefault(ct, []).append(url)
-        for ct, urls in by_ct.items():
-            log.info(f"  content-type={ct!r}: {len(urls)} responses")
-        non_static = [(m, u, s, c) for m, u, s, c in _net_hits
-                      if not any(x in c for x in ('css', 'image', 'font', 'javascript'))
-                      or 'json' in c]
-        log.info(f"Non-static (candidate API) responses: {len(non_static)}")
-        for m, u, s, c in non_static[:60]:
-            log.info(f"  {m} {s} [{c}] {u}")
-
+        log.info(f"=== NETWORK: {len(_net_hits)} total responses touching tylertech ===")
         with open(os.path.join(OUT_DIR, 'network_summary.json'), 'w') as f:
             json.dump([{'method': m, 'url': u, 'status': s, 'content_type': c}
                        for m, u, s, c in _net_hits], f, indent=2)
 
         browser.close()
-        log.info("Probe v2 complete.")
+        log.info("Probe v3 complete.")
 
 
 if __name__ == '__main__':
