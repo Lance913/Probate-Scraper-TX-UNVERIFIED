@@ -50,6 +50,37 @@ UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
 STATIC_EXT = ('.js', '.css', '.woff', '.woff2', '.ttf', '.eot', '.ico',
               '.svg', '.jpg', '.jpeg', '.gif', '.map')
 
+# A sibling agent (Collin/Tarrant, classic Tyler /PublicAccess/ product)
+# conclusively confirmed an AWS WAF Bot Control interactive CAPTCHA gates
+# that endpoint family -- IP/traffic-pattern based (not a browser/Playwright
+# fingerprinting issue; ruled out across 3 engines). Dallas/Travis are a
+# different Tyler product (self-hosted Odyssey "Portal"), so it may not
+# apply, but detect+log loudly rather than silently returning "0 results" or
+# burning cycles re-theorizing fingerprinting if a wall does show up here.
+BOT_WALL_SIGNATURES = [
+    'captcha', 'human verification', 'attention required', 'access denied',
+    'are you a robot', 'bot detection', 'checking your browser',
+    'please verify you are a human', 'unusual traffic', 'perimeterx',
+    'incapsula', 'imperva', 'cloudflare', 'request blocked',
+    'automation detected', 'pardon the interruption', 'reference id',
+    'verify you are human', 'security check', 'blocked for security reasons',
+]
+
+BOT_WALL_HIT = False  # sticky flag, checked at end of run for a clear summary line
+
+
+def detect_bot_wall(label, title='', body=''):
+    global BOT_WALL_HIT
+    hay = f"{title}\n{body}".lower()
+    hits = [sig for sig in BOT_WALL_SIGNATURES if sig in hay]
+    if hits:
+        BOT_WALL_HIT = True
+        log.warning(f"!!!!! BOT-WALL / CAPTCHA DETECTED at {label} -- matched: {hits} !!!!!")
+        log.warning("Per prior finding on the classic Tyler /PublicAccess/ product: this is "
+                     "IP/traffic-pattern based (WAF), not a Playwright/fingerprint issue. Do "
+                     "NOT attempt CAPTCHA-solving/bypass -- treat as a real blocker and report it.")
+    return bool(hits)
+
 DUMP_JS = r"""() => {
     const forms = Array.from(document.querySelectorAll('form')).map(f => ({
         id: f.id, action: f.action, method: f.method,
@@ -161,6 +192,7 @@ def quick_http_check(url):
             log.info(f"redirect chain: {[h.status_code for h in r.history]} -> {[h.url for h in r.history]}")
         sample = ' '.join(r.text.split())[:800]
         log.info(f"body sample: {sample}")
+        detect_bot_wall('quick_http_check', body=r.text)
     except Exception as exc:
         log.error(f"quick_http_check FAILED: {type(exc).__name__}: {exc}")
 
@@ -204,6 +236,7 @@ def dump_state(page, label):
     log.info(f"nav/clickable ({len(state['nav'])}): {json.dumps(state['nav'])[:4000]}")
     log.info(f"tables ({len(state['tables'])}): {json.dumps(state['tables'])[:4000]}")
     log.info(f"bodyTextSample:\n{state['bodyTextSample']}")
+    detect_bot_wall(label, title=state.get('title', ''), body=state.get('bodyTextSample', ''))
 
 
 def try_dismiss_modal(page):
@@ -356,6 +389,7 @@ def main():
         json.dump(network_log, f, indent=2, default=str)
     log.info(f"Wrote {out_name}")
 
+    log.info(f"===== BOT-WALL / CAPTCHA DETECTED THIS RUN: {BOT_WALL_HIT} =====")
     log.info("===== PROBE END =====")
 
 

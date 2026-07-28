@@ -1,20 +1,37 @@
 name: Probe Odyssey Portal (Dallas / Travis)
 
 # Throwaway investigation workflow -- see SYSTEM_GUIDE.md S6. Safe to delete
-# once scrapers/dallas.py + scrapers/travis.py (or a shared module) are
-# written and confirmed working via daily_scrape.yml dry runs.
+# once scrapers for Dallas/Travis are written and confirmed working via
+# daily_scrape.yml dry runs.
+#
+# Triggers on push (paths-filtered) to this branch so it self-runs while
+# iterating. workflow_dispatch normally requires the workflow file to exist
+# on the repo's DEFAULT branch before it becomes dispatchable at all (a real
+# GitHub API constraint, confirmed via a 404 "not found on the default
+# branch" from `gh workflow run` against this branch) -- pushing straight to
+# main to work around that is out of scope here (branch -> PR -> user-merge
+# only), so `push` is the trigger that actually works pre-merge. Editing
+# DEFAULT_BASE_URL/DEFAULT_COUNTY below (or the .py script itself) + pushing
+# is the iteration loop. workflow_dispatch inputs are still wired up for
+# later/manual convenience once this is mergeable.
 
 on:
+  push:
+    branches:
+      - add-dallas-travis-probate-scrapers
+    paths:
+      - 'probe_odyssey_portal.py'
+      - '.github/workflows/probe_odyssey_portal.yml'
   workflow_dispatch:
     inputs:
       base_url:
-        description: 'Portal base URL to probe'
-        required: true
-        default: 'https://courtsportal.dallascounty.org/DALLASPROD'
+        description: 'Portal base URL to probe (blank = DEFAULT_BASE_URL below)'
+        required: false
+        default: ''
       county:
-        description: 'County label (for logging/screenshot filenames)'
-        required: true
-        default: 'Dallas'
+        description: 'County label, for logging/screenshot filenames (blank = DEFAULT_COUNTY below)'
+        required: false
+        default: ''
       click_path:
         description: 'Pipe-separated link/button text to click through in sequence, e.g. "Case Records|Probate"'
         required: false
@@ -27,6 +44,13 @@ on:
         description: 'Pipe-separated FULL URLs to also load verbatim (e.g. a hypothesized results query URL)'
         required: false
         default: ''
+
+env:
+  # Used on `push`-triggered runs (no inputs available) and as the fallback
+  # when a workflow_dispatch input is left blank. Edit these to aim the next
+  # push-triggered iteration at a different county/URL.
+  DEFAULT_BASE_URL: 'https://courtsportal.dallascounty.org/DALLASPROD'
+  DEFAULT_COUNTY: 'Dallas'
 
 jobs:
   probe:
@@ -49,8 +73,8 @@ jobs:
       - name: Run probe
         run: |
           python probe_odyssey_portal.py \
-            --base-url "${{ github.event.inputs.base_url }}" \
-            --county "${{ github.event.inputs.county }}" \
+            --base-url "${{ github.event.inputs.base_url || env.DEFAULT_BASE_URL }}" \
+            --county "${{ github.event.inputs.county || env.DEFAULT_COUNTY }}" \
             --click "${{ github.event.inputs.click_path }}" \
             --extra-paths "${{ github.event.inputs.extra_paths }}" \
             --direct-urls "${{ github.event.inputs.direct_urls }}"
@@ -59,7 +83,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: probe-${{ github.event.inputs.county }}-${{ github.run_id }}
+          name: probe-${{ github.event.inputs.county || env.DEFAULT_COUNTY }}-${{ github.run_id }}
           path: |
             probe_*.png
             probe_*_network.json
