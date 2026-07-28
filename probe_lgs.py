@@ -503,10 +503,78 @@ def main():
         except Exception as e:
             log.info(f"content() FAILED: {str(e)[:200]}")
 
+        # ── PHASE 4b — Click the "Probate" category button ──────────────────
+        # Selecting the office doesn't reveal layer25 directly. It relabels a
+        # set of placeholder buttons (WTKCB_1.."L", WTKCB_2.."O", WTKCB_3..
+        # "A" etc, literally spelling "LOADING" as placeholders) into the
+        # category buttons actually offered by that office. For CC070 (Ellis
+        # County Clerk) that diff showed exactly 3 categories appear: Criminal
+        # / Civil / Probate (no Property/Vitals/Trustee for this office via
+        # LGS -- Ellis uses a separate AcclaimWeb system for property
+        # recording). Click by visible text, not by assuming a fixed WTKCB_N
+        # index, since the mapping could differ per office.
+        log.info("=" * 70)
+        log.info("PHASE 4b — Click 'Probate' category button")
+        log.info("=" * 70)
+
+        try:
+            probate_btn = search_frame2.locator('button:text-is("Probate")')
+            log.info(f"'Probate' button count={probate_btn.count()}")
+            probate_btn.click(timeout=10000)
+            log.info("Clicked 'Probate' category button")
+        except Exception as e:
+            log.error(f"Click 'Probate' button FAILED: {str(e)[:300]}")
+            browser.close()
+            return
+
+        page.wait_for_timeout(6000)
+        try:
+            page.wait_for_load_state('load', timeout=10000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
+
+        try:
+            page.screenshot(path='ors_after_probate_click.png', full_page=True)
+            log.info("Saved screenshot -> ors_after_probate_click.png")
+        except Exception as e:
+            log.info(f"screenshot FAILED: {str(e)[:200]}")
+
+        search_frame3 = get_frame_by_name('update')
+        if not search_frame3:
+            log.error("'update' frame gone after Probate click — aborting.")
+            browser.close()
+            return
+
+        try:
+            panel_vis2 = search_frame3.evaluate("""() => {
+                const ids = ['layer1','layer21','layer22','layer23','layer24','layer25','layer26'];
+                return ids.map(id => {
+                    const el = document.getElementById(id);
+                    if (!el) return {id, present:false};
+                    const cs = window.getComputedStyle(el);
+                    return {id, present:true, visibility:cs.visibility, display:cs.display};
+                });
+            }""")
+            log.info(f"Panel visibility after Probate click: {panel_vis2}")
+        except Exception as e:
+            log.info(f"panel visibility check FAILED: {str(e)[:300]}")
+
+        try:
+            fr_html = search_frame3.content()
+            with open('ors_after_probate_click.html', 'w') as f:
+                f.write(fr_html)
+            log.info(f"Saved raw HTML ({len(fr_html)} chars) -> ors_after_probate_click.html")
+        except Exception as e:
+            log.info(f"content() FAILED: {str(e)[:200]}")
+
         # ── PHASE 5 — Probate Search: last 30 days, submit ──────────────────
         log.info("=" * 70)
         log.info("PHASE 5 — Probate Search (layer25): last 30 days, submit")
         log.info("=" * 70)
+
+        # Use the freshest 'update' frame reference for all Phase 5 actions.
+        search_frame2 = search_frame3
 
         end_d = date.today()
         start_d = end_d - timedelta(days=30)
