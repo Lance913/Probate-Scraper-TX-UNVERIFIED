@@ -48,9 +48,12 @@ on:
 env:
   # Used on `push`-triggered runs (no inputs available) and as the fallback
   # when a workflow_dispatch input is left blank. Edit these to aim the next
-  # push-triggered iteration at a different county/URL.
+  # push-triggered iteration at a different county/URL/click-path.
   DEFAULT_BASE_URL: 'https://courtsportal.dallascounty.org/DALLASPROD'
   DEFAULT_COUNTY: 'Dallas'
+  DEFAULT_CLICK_PATH: ''
+  DEFAULT_EXTRA_PATHS: ''
+  DEFAULT_DIRECT_URLS: 'https://courtsportal.dallascounty.org/DALLASPROD/Home/Dashboard/29'
 
 jobs:
   probe:
@@ -75,9 +78,9 @@ jobs:
           python probe_odyssey_portal.py \
             --base-url "${{ github.event.inputs.base_url || env.DEFAULT_BASE_URL }}" \
             --county "${{ github.event.inputs.county || env.DEFAULT_COUNTY }}" \
-            --click "${{ github.event.inputs.click_path }}" \
-            --extra-paths "${{ github.event.inputs.extra_paths }}" \
-            --direct-urls "${{ github.event.inputs.direct_urls }}"
+            --click "${{ github.event.inputs.click_path || env.DEFAULT_CLICK_PATH }}" \
+            --extra-paths "${{ github.event.inputs.extra_paths || env.DEFAULT_EXTRA_PATHS }}" \
+            --direct-urls "${{ github.event.inputs.direct_urls || env.DEFAULT_DIRECT_URLS }}"
 
       - name: Upload screenshots + network log
         if: always()
