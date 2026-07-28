@@ -451,16 +451,6 @@ def main():
             ok = load_and_dump(page, args.base_url, 'base',
                                 screenshot_path=f'probe_{slug}_00_base.png')
 
-            if ok:
-                for i, text in enumerate(click_list, start=1):
-                    if click_text(page, text, f'click:{text}'):
-                        dump_state(page, f'after-click:{text}',
-                                   json_path=f'probe_{slug}_{i:02d}_click.json')
-                        try:
-                            page.screenshot(path=f'probe_{slug}_{i:02d}_click.png', full_page=True)
-                        except Exception:
-                            pass
-
             base_for_join = args.base_url if args.base_url.endswith('/') else args.base_url + '/'
             for i, path in enumerate(extra_paths, start=1):
                 url = urljoin(base_for_join, path.lstrip('/'))
@@ -470,6 +460,20 @@ def main():
             for i, url in enumerate(direct_urls, start=1):
                 load_and_dump(page, url, f'direct-url:{url}',
                               screenshot_path=f'probe_{slug}_direct{i:02d}.png')
+
+            # Clicks + typing run AFTER base/extra-paths/direct-urls, against
+            # whatever page that navigation landed on -- e.g. a tab/accordion
+            # header (like "Case Search Criteria") that must be revealed
+            # before a field nested in that pane becomes clickable/typeable.
+            if ok:
+                for i, text in enumerate(click_list, start=1):
+                    if click_text(page, text, f'click:{text}'):
+                        dump_state(page, f'after-click:{text}',
+                                   json_path=f'probe_{slug}_{i:02d}_click.json')
+                        try:
+                            page.screenshot(path=f'probe_{slug}_{i:02d}_click.png', full_page=True)
+                        except Exception:
+                            pass
 
             for i, pair in enumerate(type_into, start=1):
                 selector_hint, _, text = pair.partition('=')

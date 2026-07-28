@@ -55,10 +55,10 @@ env:
   # push-triggered iteration at a different county/URL/click-path.
   DEFAULT_BASE_URL: 'https://courtsportal.dallascounty.org/DALLASPROD'
   DEFAULT_COUNTY: 'Dallas'
-  DEFAULT_CLICK_PATH: ''
+  DEFAULT_CLICK_PATH: 'Case Search Criteria|General Options'
   DEFAULT_EXTRA_PATHS: ''
   DEFAULT_DIRECT_URLS: 'https://courtsportal.dallascounty.org/DALLASPROD/Home/Dashboard/29'
-  DEFAULT_TYPE_INTO: 'CourtLocation_input=Probate'
+  DEFAULT_TYPE_INTO: 'CaseType_input=Probate|CourtLocation_input=Probate'
 
 jobs:
   probe:
