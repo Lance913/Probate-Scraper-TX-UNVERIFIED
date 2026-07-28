@@ -1,51 +1,45 @@
 """
-Probe v5 — Bexar County Tyler Odyssey Portal (portal-txbexar.tylertech.cloud).
+Probe v6 — Bexar County Tyler Odyssey Portal (portal-txbexar.tylertech.cloud).
 
-Ground truth from v1-v4 (confirmed):
-  * Kendo UI widgets, submit = input#btnSSSubmit[type=submit].
-  * caseCriteria_CourtLocation cascades to caseCriteria_CaseType ENTIRELY
-    client-side (0 network requests on change) — the "cascade" only ever
-    yields a single generic placeholder item per location though (e.g.
-    'County Clerk Case Search'). Typing into the CaseType box ALSO fired
-    zero network requests across 18 attempts (9 terms x 2 locations) — so
-    it is not a server-filtered autocomplete either. This dropdown's real
-    per-type taxonomy (if reachable here at all) needs a different approach
-    than anything tried so far — DEPRIORITIZED for this probe.
-  * The SEPARATE caseCriteria_NameLast field (and First/Middle) is NOT what
-    client validation checks — filling it with 'A*', 'AB*', '%', 'A%' (v4)
-    ALL produced the exact same "Please enter a value for search criteria"
-    error, proving that field is inert/hidden in the current UI mode.
-  * The REAL required field is the single combined text input
-    #caseCriteria_SearchCriteria (plain <input type=text>, no Kendo widget
-    attached). v3 only ever tried it with a bare '*' (rejected). NEVER
-    tried with a realistic value like 'A*' or 'SMITH*' — that is the
-    priority gap this probe closes.
+Ground truth from v1-v5 (confirmed):
+  * Real submit: input#btnSSSubmit[type=submit]. Required field: the plain
+    #caseCriteria_SearchCriteria text input — needs a REALISTIC wildcard
+    ('SMITH*' works; bare '*' and separate NameLast field do NOT — that
+    field is inert in this UI mode).
+  * 'SMITH*' + Location=County Clerk (client-side cascade) + wide File Date
+    range got PAST client validation and fired a REAL network round trip:
+        POST https://portal-txbexar.tylertech.cloud/Portal/SmartSearch/SmartSearch/SmartSearch
+        -> 302 -> GET .../Portal/Home/Dashboard/29
+    This is the real search endpoint (Post-Redirect-Get pattern) — a major
+    unblock. NO captcha/bot-challenge was encountered on this real POST.
+  * BUT the redirect landing page showed no visible results and no kendoGrid
+    — body text looked like a freshly-reset search FORM shell (Advanced
+    Filtering Options collapsed again), not a results view. Most likely
+    explanation: results render via a follow-up AJAX call after the redirect
+    lands, and v5 only waited 5s total before checking — not necessarily a
+    real "0 results" answer. This probe waits much longer and polls.
+  * v5 had two bugs fixed here: (1) the "case link" filter followed unrelated
+    footer badge links (Chrome/Firefox/Safari download badges, generic
+    Register/Sign-In), which is how it ended up on a Google marketing page;
+    now restricted to hrefs actually on portal-txbexar.tylertech.cloud.
+    (2) the bot-challenge regex included the bare word "challenge", which
+    false-positived on that Google page's ad copy ("browser challenges") —
+    tightened to specific human-verification phrases only.
 
-This probe, in order, stopping at first success:
-  1. Fresh page, expand Advanced, set Location=County Clerk (client-side
-     cascade, confirmed harmless), fill File Date Start/End wide.
-  2. Try #caseCriteria_SearchCriteria = 'A*', then 'SMITH*', then 'SMITH, *',
-     then 'A*, *' — one per fresh page load — clicking the REAL submit
-     button each time and checking for (a) a real network POST/GET beyond
-     the static page load, (b) absence of the "please enter/incorrectly"
-     client validation text, (c) — per explicit instruction from the
-     coordinator — an active CAPTCHA/human-verification CHALLENGE page
-     (not just the passive checkbox we already know exists). If seen: log
-     it loudly and stop trying that path; do NOT attempt to solve/bypass
-     it, do NOT theorize browser-fingerprinting causes.
-  3. On first real success: dump EVERYTHING about the results — Kendo Grid
-     dataSource (structured JSON), any <table>, real case-number links, and
-     the actual 'Case Type' values seen in real rows (the most reliable way
-     left to learn the true estate-case-type taxonomy, since the dropdown
-     approach has failed twice). Opens the first case detail link and dumps
-     its Party Information section verbatim (decedent/executor structured
-     data vs OCR-needed — the other big open question).
+This probe: re-runs the known-working 'SMITH*' + County Clerk query, but
+(a) logs the 302's Location header explicitly, (b) waits/polls up to 20s for
+a real results signal (kendoGrid with rows, a real <table>, or explicit
+no-results text) instead of one fixed 5s wait, (c) saves the FULL raw HTML
+of the landing page (not just innerText) so a results container can be
+spotted even if still empty, (d) only follows same-host result links, and
+(e) uses a tightened bot-challenge check.
 """
 import json
 import logging
 import os
 import re
 import sys
+import time
 from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -56,6 +50,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [BEXAR-PROBE] %(mess
 log = logging.getLogger()
 
 BASE = "https://portal-txbexar.tylertech.cloud/Portal"
+HOST = "portal-txbexar.tylertech.cloud"
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'probe_out')
 os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -83,7 +78,14 @@ def dump_network(page):
             is_asset = any(x in lower for x in ('/content/', '/scripts/', '/fonts/', '/theme/', '/bundles/'))
             _net_hits.append((resp.request.method, url, status, ct))
             if not is_asset:
-                log.info(f"  [non-asset] {resp.request.method} {status} [{ct}] {url}")
+                loc_hdr = ''
+                if status in (301, 302, 303, 307, 308):
+                    try:
+                        loc_hdr = resp.headers.get('location', '')
+                    except Exception:
+                        pass
+                log.info(f"  [non-asset] {resp.request.method} {status} [{ct}] {url}"
+                          + (f"  -> Location: {loc_hdr}" if loc_hdr else ""))
                 if _saved_bodies < 80:
                     try:
                         body = resp.text()
@@ -108,6 +110,7 @@ def snapshot(page, tag: str):
         html = page.content()
         with open(os.path.join(OUT_DIR, f'{tag}.html'), 'w') as f:
             f.write(html)
+        log.info(f"[{tag}] saved ({len(html)} bytes) url={page.url}")
     except Exception as e:
         log.warning(f"[{tag}] html save failed: {e}")
 
@@ -152,17 +155,17 @@ def js_set_kendo_value(page, el_id: str, value: str, label: str) -> bool:
     return ok
 
 
+# Tightened: specific human-verification phrasing only (v5's bare "challenge"
+# false-positived on an unrelated Google Chrome marketing page).
 CAPTCHA_PATTERNS = re.compile(
-    r"verify you are human|complete the captcha|human verification|"
-    r"unusual traffic|access denied|are you a robot|challenge",
+    r"verify you are human|complete the captcha|human verification required|"
+    r"unusual traffic from your (network|computer)|"
+    r"access to this page has been denied|are you a robot\?|"
+    r"checking your browser before accessing",
     re.I)
 
 
 def check_for_bot_challenge(page, label: str) -> bool:
-    """Explicit, isolated check for an ACTIVE bot-check/CAPTCHA challenge
-    page (distinct from the passive reCAPTCHA checkbox we already know is
-    embedded in the form). Per explicit guidance: if this ever fires, log
-    loudly, do not attempt to solve/bypass, do not theorize fingerprinting."""
     try:
         title = page.title()
         body = page.evaluate("() => document.body.innerText || ''")
@@ -177,38 +180,33 @@ def check_for_bot_challenge(page, label: str) -> bool:
     return False
 
 
-def try_main_box(page, value: str):
-    fresh_smart_search(page)
-    js_set_kendo_value(page, 'caseCriteria_CourtLocation', 'County Clerk', 'loc')
-    page.wait_for_timeout(800)
-    page.locator('input[name*="FileDateStart" i]').first.fill(WINDOW_START.strftime('%m/%d/%Y'))
-    page.keyboard.press('Escape')
-    page.locator('input[name*="FileDateEnd" i]').first.fill(TODAY.strftime('%m/%d/%Y'))
-    page.keyboard.press('Escape')
-    page.locator('#caseCriteria_SearchCriteria').fill(value)
-    page.wait_for_timeout(300)
-    snapshot(page, f'v5_before_{_safe_name(value)}')
-
-    if check_for_bot_challenge(page, f'before_submit_{value}'):
-        return False, ['BOT_CHALLENGE'], ''
-
-    pre = len(_net_hits)
-    page.locator('#btnSSSubmit').first.click(timeout=10000)
-    page.wait_for_timeout(5000)
-    post = len(_net_hits)
-
-    if check_for_bot_challenge(page, f'after_submit_{value}'):
-        return False, ['BOT_CHALLENGE'], ''
-
-    body = page.evaluate("() => document.body.innerText || ''")
-    err_lines = [l for l in body.split('\n') if
-                 'incorrectly' in l.lower() or 'please enter' in l.lower()
-                 or 'must be' in l.lower() or 'at least' in l.lower()]
-    new_reqs = post - pre
-    log.info(f"[try_main_box value={value!r}] new_requests={new_reqs} err_lines={err_lines}")
-    snapshot(page, f'v5_after_{_safe_name(value)}')
-    success = new_reqs > 0 and not err_lines
-    return success, err_lines, body
+def wait_for_results(page, timeout_ms=22000):
+    """Poll for a real results signal after submit, per SYSTEM_GUIDE.md bug#1
+    (a slow render must never be read as '0 results')."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_state = None
+    while time.monotonic() < deadline:
+        state = page.evaluate("""() => {
+            let gridRows = -1, gridTotal = -1;
+            try {
+                if (typeof jQuery !== 'undefined') {
+                    const g = jQuery('[data-role="grid"]').data('kendoGrid');
+                    if (g) { gridRows = g.dataSource.data().length; gridTotal = g.dataSource.total(); }
+                }
+            } catch (e) {}
+            const body = (document.body.innerText || '');
+            const noRes = /no results|no records|0 results|did not match|no matches|no cases found/i.test(body);
+            const realTableRows = Array.from(document.querySelectorAll('table')).map(
+                t => t.querySelectorAll('tr').length).filter(n => n > 1);
+            return {gridRows, gridTotal, noRes, realTableRows, bodyLen: body.length};
+        }""")
+        last_state = state
+        if state['gridRows'] > 0 or any(n > 5 for n in state['realTableRows']):
+            return 'has_rows', state
+        if state['noRes']:
+            return 'no_results_message', state
+        page.wait_for_timeout(700)
+    return 'timeout', last_state
 
 
 def main():
@@ -224,93 +222,106 @@ def main():
         page.set_default_timeout(20000)
         dump_network(page)
 
-        candidates = ['A*', 'SMITH*', 'SMITH, *', 'A*, *']
-        success = False
-        success_body = ''
-        winning_value = None
-        for val in candidates:
-            try:
-                log.info(f"=== Trying main SearchCriteria = {val!r} ===")
-                ok, errs, body = try_main_box(page, val)
-                if ok:
-                    log.info(f"*** SUCCESS with {val!r} ***")
-                    success = True
-                    success_body = body
-                    winning_value = val
-                    break
-                elif errs == ['BOT_CHALLENGE']:
-                    log.error("Stopping wildcard sweep — bot challenge encountered, not a validation issue.")
-                    break
-                else:
-                    log.info(f"{val!r} rejected: {errs}")
-            except Exception as ex:
-                log.error(f"try_main_box({val!r}) error: {ex}", exc_info=True)
+        try:
+            log.info("=== Submitting known-working query: SMITH* / County Clerk / wide date range ===")
+            fresh_smart_search(page)
+            js_set_kendo_value(page, 'caseCriteria_CourtLocation', 'County Clerk', 'loc')
+            page.wait_for_timeout(800)
+            page.locator('input[name*="FileDateStart" i]').first.fill(WINDOW_START.strftime('%m/%d/%Y'))
+            page.keyboard.press('Escape')
+            page.locator('input[name*="FileDateEnd" i]').first.fill(TODAY.strftime('%m/%d/%Y'))
+            page.keyboard.press('Escape')
+            page.locator('#caseCriteria_SearchCriteria').fill('SMITH*')
+            page.wait_for_timeout(300)
 
-        if success:
-            log.info(f"=== RESULTS after winning query (SearchCriteria={winning_value!r}) ===")
-            log.info(f"Post-submit URL: {page.url}")
-            log.info("=== BODY TEXT (first 300 lines) ===")
-            for ln in [l for l in success_body.split('\n') if l.strip()][:300]:
+            if check_for_bot_challenge(page, 'before_submit'):
+                raise SystemExit("bot challenge before submit")
+
+            page.locator('#btnSSSubmit').first.click(timeout=10000)
+            log.info("Clicked submit — waiting/polling for real results (up to 22s)...")
+            status, state = wait_for_results(page, timeout_ms=22000)
+            log.info(f"wait_for_results -> status={status} state={state}")
+
+            if check_for_bot_challenge(page, 'after_submit'):
+                raise SystemExit("bot challenge after submit")
+
+            log.info(f"Landing URL: {page.url}")
+            snapshot(page, '01_after_submit_full')
+
+            body = page.evaluate("() => document.body.innerText || ''")
+            log.info(f"=== BODY TEXT ({len([l for l in body.split(chr(10)) if l.strip()])} lines) ===")
+            for ln in [l for l in body.split('\n') if l.strip()][:400]:
                 log.info(f"  | {ln}")
 
-            try:
-                grid_info = page.evaluate("""() => {
-                    if (typeof jQuery === 'undefined') return {error: 'no jQuery'};
-                    const g = jQuery('[data-role="grid"]').data('kendoGrid');
-                    if (!g) return {error: 'no kendoGrid'};
+            # Grep the raw HTML for likely results-container ids/classes even
+            # if currently empty, to guide the next probe if this one is dry.
+            html = page.content()
+            container_hits = re.findall(
+                r'id="([^"]*(?:[Rr]esult|[Ss]earch|[Gg]rid)[^"]*)"', html)
+            log.info(f"HTML ids containing Result/Search/Grid ({len(set(container_hits))} distinct): "
+                      f"{sorted(set(container_hits))[:60]}")
+
+            grid_info = page.evaluate("""() => {
+                if (typeof jQuery === 'undefined') return {error: 'no jQuery'};
+                const grids = [];
+                jQuery('[data-role="grid"]').each(function() {
+                    const g = jQuery(this).data('kendoGrid');
+                    if (!g) return;
                     let rows = [];
                     try { rows = g.dataSource.data().map(it => it.toJSON ? it.toJSON() : it); } catch (e) {}
-                    return {total: g.dataSource.total(), rowCount: rows.length, rows: rows.slice(0, 30)};
-                }""")
-                log.info(f"KENDO GRID: {json.dumps(grid_info, default=str)[:10000]}")
-            except Exception as e:
-                log.warning(f"grid dump error: {e}")
+                    grids.push({id: this.id, total: g.dataSource.total(), rows: rows.slice(0, 30)});
+                });
+                return {count: grids.length, grids};
+            }""")
+            log.info(f"KENDO GRIDS: {json.dumps(grid_info, default=str)[:10000]}")
 
-            try:
-                tables = page.evaluate("""() => {
-                    return Array.from(document.querySelectorAll('table')).map(t => ({
-                        headers: Array.from(t.querySelectorAll('th')).map(h => (h.textContent||'').trim()),
-                        rowCount: t.querySelectorAll('tr').length,
-                        sample: Array.from(t.querySelectorAll('tr')).slice(1,20).map(
-                            tr => Array.from(tr.querySelectorAll('td')).map(td => (td.textContent||'').trim())
-                        ),
-                    }));
-                }""")
-                for i, t in enumerate(tables):
-                    if t['rowCount'] <= 1:
-                        continue
-                    log.info(f"TABLE {i}: headers={t['headers']} rowCount={t['rowCount']}")
+            tables = page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('table')).map(t => ({
+                    id: t.id, cls: (t.className||'').toString(),
+                    headers: Array.from(t.querySelectorAll('th')).map(h => (h.textContent||'').trim()),
+                    rowCount: t.querySelectorAll('tr').length,
+                    sample: Array.from(t.querySelectorAll('tr')).slice(1,20).map(
+                        tr => Array.from(tr.querySelectorAll('td')).map(td => (td.textContent||'').trim())
+                    ),
+                }));
+            }""")
+            for i, t in enumerate(tables):
+                log.info(f"TABLE {i}: id={t['id']!r} class={t['cls']!r} headers={t['headers']} rowCount={t['rowCount']}")
+                if t['rowCount'] > 1:
                     for r in t['sample']:
                         log.info(f"  ROW: {r}")
-            except Exception as e:
-                log.warning(f"table dump error: {e}")
 
-            try:
-                case_links = page.evaluate("""() => {
-                    return Array.from(document.querySelectorAll('a[href]'))
-                        .map(a => ({href: a.getAttribute('href'), text:(a.textContent||'').trim()}))
-                        .filter(a => a.href && a.href !== '#' && !a.href.startsWith('javascript'))
-                        .slice(0, 30);
-                }""")
-                log.info(f"Real links on results page ({len(case_links)}): {case_links}")
-                if case_links:
-                    href = case_links[0]['href']
-                    detail_url = href if href.startswith('http') else (
-                        f"https://portal-txbexar.tylertech.cloud{href}" if href.startswith('/') else None)
-                    if detail_url:
-                        log.info(f"Opening case detail -> {detail_url}")
-                        page.goto(detail_url, wait_until='networkidle')
-                        page.wait_for_timeout(2500)
-                        if not check_for_bot_challenge(page, 'case_detail'):
-                            snapshot(page, '30_case_detail')
-                            detail_body = page.evaluate("() => document.body.innerText || ''")
-                            log.info("=== CASE DETAIL BODY TEXT (first 350 lines) ===")
-                            for ln in [l for l in detail_body.split('\n') if l.strip()][:350]:
-                                log.info(f"  | {ln}")
-            except Exception as e:
-                log.warning(f"case detail phase error: {e}")
-        else:
-            log.info("=== No candidate got past validation / a bot challenge was hit — see logs above ===")
+            same_host_links = page.evaluate("""(host) => {
+                return Array.from(document.querySelectorAll('a[href]'))
+                    .map(a => ({href: a.getAttribute('href'), text:(a.textContent||'').trim()}))
+                    .filter(a => a.href && a.href !== '#' && !a.href.startsWith('javascript')
+                                 && !a.href.startsWith('http') || (a.href.includes(host)))
+                    .filter(a => !/getfirefox|microsoft\\.com|apple\\.com|google\\.com/i.test(a.href))
+                    .slice(0, 40);
+            }""", HOST)
+            log.info(f"Same-host / relative links ({len(same_host_links)}): {same_host_links}")
+
+            case_like = [l for l in same_host_links if
+                         re.search(r'/case/|casedetail|smartsearch/case|/cases/', l['href'], re.I)]
+            log.info(f"Case-detail-looking links: {case_like}")
+
+            if status == 'has_rows' and case_like:
+                href = case_like[0]['href']
+                detail_url = href if href.startswith('http') else f"https://{HOST}{href}"
+                log.info(f"Opening case detail -> {detail_url}")
+                page.goto(detail_url, wait_until='networkidle')
+                page.wait_for_timeout(2500)
+                if not check_for_bot_challenge(page, 'case_detail'):
+                    snapshot(page, '02_case_detail')
+                    detail_body = page.evaluate("() => document.body.innerText || ''")
+                    log.info("=== CASE DETAIL BODY TEXT (first 350 lines) ===")
+                    for ln in [l for l in detail_body.split('\n') if l.strip()][:350]:
+                        log.info(f"  | {ln}")
+
+        except SystemExit as se:
+            log.error(f"STOPPED: {se}")
+        except Exception as ex:
+            log.error(f"main flow error: {ex}", exc_info=True)
 
         log.info(f"=== NETWORK: {len(_net_hits)} total responses touching tylertech ===")
         with open(os.path.join(OUT_DIR, 'network_summary.json'), 'w') as f:
@@ -318,7 +329,7 @@ def main():
                        for m, u, s, c in _net_hits], f, indent=2)
 
         browser.close()
-        log.info("Probe v5 complete.")
+        log.info("Probe v6 complete.")
 
 
 if __name__ == '__main__':
