@@ -78,6 +78,17 @@ DENTON -- reaches a real, correctly-scoped search form; WAF-free:
   NodeID/location was selected before submit, not via these checkboxes.
   Submit button: #SearchSubmit.
 
+  Extra confidence on the DateFiled search-mode mechanics specifically (read
+  directly from the real downloaded page's own JS, not guessed): the
+  #DateFiled radio's onclick="SwitchCaseSearch(this.value, true)" sets
+  SearchType="CASE" and SearchMode="FILED" itself, the moment it's checked --
+  independent of the submit-time ValidateSearchParameters() validator (whose
+  SearchBy switch has no explicit "6" case, which looked like a bug at first
+  read until tracing SwitchCaseSearch showed the real field-prep already
+  happened earlier, at select-time). Playwright's page.check('#DateFiled')
+  fires this onclick the same as a real user click, so the hidden fields
+  this scraper depends on ARE set correctly before submit.
+
   *** NOT YET VERIFIED (blocked by an account-wide GitHub Actions billing
   issue -- see PR description -- before the corrected-NodeID search could
   actually be submitted and a results page captured): the RESULTS TABLE's
