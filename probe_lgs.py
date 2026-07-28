@@ -237,6 +237,102 @@ def main():
         for m, s, u in xhr_log[:80]:
             log.info(f"  {m} {s} {u}")
 
+        # ── PHASE 2 — Guest Login ───────────────────────────────────────────
+        # ors_UserLogin.html's "Guest Login" button calls JS GuestSubmit(),
+        # which sets OPERCODE=orguest / PASSWD=orguest then xSubmit()s the
+        # form (POST /cgi-bin/webshell.asp). Fetch login.js first (same-origin
+        # fetch from inside the page, so it rides the existing session/cookies)
+        # to see exactly what xSubmit() does before triggering it blind.
+        menu_frame = next((fr for fr in frames if fr.name == 'menu'), None)
+        if not menu_frame:
+            log.error("Could not find frame named 'menu' — aborting Phase 2.")
+            browser.close()
+            return
+
+        log.info("=" * 70)
+        log.info("PHASE 2 — Guest Login")
+        log.info("=" * 70)
+
+        try:
+            js_src = menu_frame.evaluate(
+                "() => fetch('/javascript4.4/login.js').then(r => r.text())")
+            log.info(f"login.js contents ({len(js_src)} chars):\n{js_src[:6000]}")
+        except Exception as e:
+            log.info(f"Fetching login.js FAILED: {str(e)[:300]}")
+
+        webshell_bodies = []
+
+        def on_response2(resp):
+            try:
+                if 'webshell' in resp.url.lower():
+                    ct = resp.headers.get('content-type', '')
+                    try:
+                        body = resp.text()
+                    except Exception:
+                        body = '<unreadable/binary>'
+                    webshell_bodies.append((resp.status, resp.url, ct, body))
+            except Exception:
+                pass
+        page.on('response', on_response2)
+
+        clicked = False
+        try:
+            guest_btn = menu_frame.locator('#GuestLogIn')
+            log.info(f"Guest Login button count={guest_btn.count()}")
+            guest_btn.click(timeout=10000)
+            clicked = True
+            log.info("Clicked #GuestLogIn")
+        except Exception as e:
+            log.error(f"Click #GuestLogIn FAILED: {str(e)[:300]}")
+            try:
+                menu_frame.evaluate("GuestSubmit()")
+                clicked = True
+                log.info("Invoked GuestSubmit() directly via evaluate() as fallback")
+            except Exception as e2:
+                log.error(f"Direct GuestSubmit() evaluate ALSO failed: {str(e2)[:300]}")
+
+        if not clicked:
+            browser.close()
+            return
+
+        page.wait_for_timeout(6000)
+        try:
+            page.wait_for_load_state('load', timeout=15000)
+        except Exception:
+            pass
+        page.wait_for_timeout(3000)
+
+        log.info(f"[post-guest-login] webshell.asp responses captured ({len(webshell_bodies)}):")
+        for status, url, ct, body in webshell_bodies:
+            log.info(f"  status={status} url={url} content-type={ct!r}")
+            log.info(f"  body ({len(body)} chars): {body[:4000]!r}")
+
+        log.info(f"[post-guest-login] Final top URL: {page.url!r} title={page.title()!r}")
+        try:
+            page.screenshot(path='ors_after_guest_login.png', full_page=True)
+            log.info("Saved screenshot -> ors_after_guest_login.png")
+        except Exception as e:
+            log.info(f"post-login screenshot FAILED: {str(e)[:200]}")
+
+        frames2 = dump_frames(page)
+        for i, fr in enumerate(frames2):
+            label = f"post-login-frame[{i}]:{fr.url}"
+            try:
+                fr.wait_for_load_state('load', timeout=8000)
+            except Exception:
+                pass
+            check_structure(fr, label)
+            safe_body_text(fr, label, limit=5000)
+            dump_form(fr, label)
+            try:
+                fr_html = fr.content()
+                fname = f'ors_postlogin_frame_{i}.html'
+                with open(fname, 'w') as f:
+                    f.write(fr_html)
+                log.info(f"[{label}] saved raw HTML ({len(fr_html)} chars) -> {fname}")
+            except Exception as e:
+                log.info(f"[{label}] frame.content() FAILED: {str(e)[:200]}")
+
         browser.close()
 
 

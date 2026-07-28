@@ -42,4 +42,6 @@ jobs:
             ors_landing.png
             ors_landing.html
             ors_frame_*.html
+            ors_after_guest_login.png
+            ors_postlogin_frame_*.html
           if-no-files-found: warn
