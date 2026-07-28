@@ -44,6 +44,10 @@ on:
         description: 'Pipe-separated FULL URLs to also load verbatim (e.g. a hypothesized results query URL)'
         required: false
         default: ''
+      type_into:
+        description: 'Pipe-separated selector_hint=text pairs to click+type into (Kendo comboboxes etc), e.g. "CourtLocation_input=Probate"'
+        required: false
+        default: ''
 
 env:
   # Used on `push`-triggered runs (no inputs available) and as the fallback
@@ -54,6 +58,7 @@ env:
   DEFAULT_CLICK_PATH: ''
   DEFAULT_EXTRA_PATHS: ''
   DEFAULT_DIRECT_URLS: 'https://courtsportal.dallascounty.org/DALLASPROD/Home/Dashboard/29'
+  DEFAULT_TYPE_INTO: 'CourtLocation_input=Probate'
 
 jobs:
   probe:
@@ -80,14 +85,15 @@ jobs:
             --county "${{ github.event.inputs.county || env.DEFAULT_COUNTY }}" \
             --click "${{ github.event.inputs.click_path || env.DEFAULT_CLICK_PATH }}" \
             --extra-paths "${{ github.event.inputs.extra_paths || env.DEFAULT_EXTRA_PATHS }}" \
-            --direct-urls "${{ github.event.inputs.direct_urls || env.DEFAULT_DIRECT_URLS }}"
+            --direct-urls "${{ github.event.inputs.direct_urls || env.DEFAULT_DIRECT_URLS }}" \
+            --type-into "${{ github.event.inputs.type_into || env.DEFAULT_TYPE_INTO }}"
 
-      - name: Upload screenshots + network log
+      - name: Upload screenshots + state/network JSON
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: probe-${{ github.event.inputs.county || env.DEFAULT_COUNTY }}-${{ github.run_id }}
           path: |
             probe_*.png
-            probe_*_network.json
+            probe_*.json
           if-no-files-found: warn

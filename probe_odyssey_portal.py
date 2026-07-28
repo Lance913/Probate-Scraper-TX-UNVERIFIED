@@ -88,8 +88,10 @@ DUMP_JS = r"""() => {
             tag: el.tagName, type: el.type || '', id: el.id, name: el.name,
             placeholder: el.placeholder || '', aria: el.getAttribute('aria-label') || '',
             text: (el.textContent || '').trim().slice(0, 60),
+            value: el.tagName !== 'SELECT' ? (el.value !== undefined ? String(el.value).slice(0, 200) : '') : undefined,
+            checked: (el.type === 'checkbox' || el.type === 'radio') ? !!el.checked : undefined,
             options: el.tagName === 'SELECT'
-                ? Array.from(el.options).map(o => o.textContent.trim()).slice(0, 40)
+                ? Array.from(el.options).map(o => ({text: o.textContent.trim(), value: o.value, selected: !!o.selected})).slice(0, 60)
                 : undefined,
         })),
     }));
@@ -224,19 +226,60 @@ def make_network_logger(bucket, county):
     return on_response
 
 
-def dump_state(page, label):
+def _summarize_field(f):
+    bits = f.get('tag', '')
+    if f.get('type'):
+        bits += f":{f['type']}"
+    label = f.get('name') or f.get('id') or f.get('placeholder') or f.get('text') or ''
+    extra = ''
+    if f.get('tag') == 'SELECT' and f.get('options'):
+        extra = f" [{len(f['options'])} opts: {[o['text'] for o in f['options'][:8]]}]"
+    val = f.get('value')
+    if val:
+        extra += f" ={val!r}"
+    if f.get('checked'):
+        extra += ' [CHECKED]'
+    return f"{bits}({label}){extra}"
+
+
+def dump_state(page, label, json_path=None):
+    """Logs a compact summary (readable inline in the Actions log) and, if
+    json_path is given, writes the FULL state (incl. every field's value,
+    every <select> option's real value= not just its label, all nav text,
+    all table rows) to that file -- download it as an artifact for anything
+    the compact log summary truncates."""
     try:
         state = page.evaluate(DUMP_JS)
     except Exception as exc:
         log.warning(f"dump_state({label}) failed: {exc}")
-        return
+        return None
     log.info(f"===== STATE: {label} =====")
     log.info(f"title={state['title']!r} url={state['url']}")
-    log.info(f"forms ({len(state['forms'])}): {json.dumps(state['forms'])[:4000]}")
-    log.info(f"nav/clickable ({len(state['nav'])}): {json.dumps(state['nav'])[:4000]}")
-    log.info(f"tables ({len(state['tables'])}): {json.dumps(state['tables'])[:4000]}")
-    log.info(f"bodyTextSample:\n{state['bodyTextSample']}")
+    if state['forms']:
+        for f in state['forms']:
+            field_list = ', '.join(_summarize_field(x) for x in f['fields'])
+            log.info(f"FORM id={f['id']!r} action={f['action']!r} method={f['method']} "
+                      f"fields({len(f['fields'])}): {field_list[:3000]}")
+    else:
+        log.info("forms: (none)")
+    nav_texts = [n['text'].replace(chr(10), ' ').strip()[:40] for n in state['nav']]
+    log.info(f"nav/clickable ({len(state['nav'])}): {nav_texts}")
+    if state['tables']:
+        for t in state['tables']:
+            log.info(f"TABLE headers={t['headers']} rowCount={t['rowCount']} "
+                      f"sample={t['sampleRows'][:2]}")
+    else:
+        log.info("tables: (none)")
+    log.info(f"bodyTextSample:\n{state['bodyTextSample'][:1500]}")
     detect_bot_wall(label, title=state.get('title', ''), body=state.get('bodyTextSample', ''))
+    if json_path:
+        try:
+            with open(json_path, 'w') as jf:
+                json.dump(state, jf, indent=2, default=str)
+            log.info(f"Full state JSON written: {json_path}")
+        except Exception as exc:
+            log.warning(f"failed writing {json_path}: {exc}")
+    return state
 
 
 def try_dismiss_modal(page):
@@ -259,7 +302,7 @@ def settle(page, timeout_ms=20000):
     page.wait_for_timeout(1000)
 
 
-def load_and_dump(page, url, label, screenshot_path=None):
+def load_and_dump(page, url, label, screenshot_path=None, json_path=None):
     log.info(f"--- goto {label}: {url}")
     try:
         resp = page.goto(url, wait_until='domcontentloaded', timeout=45000)
@@ -270,7 +313,9 @@ def load_and_dump(page, url, label, screenshot_path=None):
     settle(page)
     try_dismiss_modal(page)
     settle(page, timeout_ms=8000)
-    dump_state(page, label)
+    if json_path is None and screenshot_path:
+        json_path = screenshot_path.rsplit('.', 1)[0] + '.json'
+    dump_state(page, label, json_path=json_path)
     if screenshot_path:
         try:
             page.screenshot(path=screenshot_path, full_page=True)
@@ -310,6 +355,51 @@ def click_text(page, text, label):
     return True
 
 
+def try_type_and_dump(page, selector_hint, text, slug, idx):
+    """Click into a field (matched by id/name substring -- Kendo widgets often
+    have generated ids, so try a few strategies) and type text via real
+    keystrokes (not .fill(), which doesn't fire the keyup/input events Kendo
+    autocomplete/combobox filtering listens to), then dump state + screenshot.
+    Also useful to see any AJAX call the typing triggers (the network logger
+    is already attached and will log it automatically)."""
+    label = f"type:{selector_hint}={text}"
+    log.info(f"--- {label}")
+    candidates = [
+        f'#{selector_hint}',
+        f'input[id*="{selector_hint}" i]',
+        f'input[name*="{selector_hint}" i]',
+    ]
+    target = None
+    for sel in candidates:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0:
+                target = loc
+                log.info(f"typing target matched selector: {sel!r}")
+                break
+        except Exception:
+            continue
+    if target is None:
+        log.warning(f"No element found for selector hint {selector_hint!r}")
+        return False
+    try:
+        target.click(timeout=8000)
+        page.keyboard.press('Control+A')
+        page.keyboard.type(text, delay=70)
+    except Exception as exc:
+        log.warning(f"typing into {selector_hint!r} failed: {exc}")
+        return False
+    page.wait_for_timeout(2500)
+    try_dismiss_modal(page)
+    dump_state(page, label, json_path=f'probe_{slug}_type{idx:02d}.json')
+    try:
+        page.screenshot(path=f'probe_{slug}_type{idx:02d}.png', full_page=True)
+        log.info(f"Screenshot saved: probe_{slug}_type{idx:02d}.png")
+    except Exception:
+        pass
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--base-url', required=True)
@@ -317,11 +407,16 @@ def main():
     ap.add_argument('--click', default='', help='pipe-separated click text sequence')
     ap.add_argument('--extra-paths', default='', help='pipe-separated relative paths')
     ap.add_argument('--direct-urls', default='', help='pipe-separated full URLs')
+    ap.add_argument('--type-into', default='',
+                     help='pipe-separated selector_hint=text pairs to click+type into '
+                          '(applied on whatever page was last loaded), e.g. '
+                          '"CourtLocation_input=Probate"')
     args = ap.parse_args()
 
     click_list = [s.strip() for s in args.click.split('|') if s.strip()]
     extra_paths = [s.strip() for s in args.extra_paths.split('|') if s.strip()]
     direct_urls = [s.strip() for s in args.direct_urls.split('|') if s.strip()]
+    type_into = [s.strip() for s in args.type_into.split('|') if s.strip() and '=' in s]
 
     quick_http_check(args.base_url)
 
@@ -359,7 +454,8 @@ def main():
             if ok:
                 for i, text in enumerate(click_list, start=1):
                     if click_text(page, text, f'click:{text}'):
-                        dump_state(page, f'after-click:{text}')
+                        dump_state(page, f'after-click:{text}',
+                                   json_path=f'probe_{slug}_{i:02d}_click.json')
                         try:
                             page.screenshot(path=f'probe_{slug}_{i:02d}_click.png', full_page=True)
                         except Exception:
@@ -374,6 +470,10 @@ def main():
             for i, url in enumerate(direct_urls, start=1):
                 load_and_dump(page, url, f'direct-url:{url}',
                               screenshot_path=f'probe_{slug}_direct{i:02d}.png')
+
+            for i, pair in enumerate(type_into, start=1):
+                selector_hint, _, text = pair.partition('=')
+                try_type_and_dump(page, selector_hint.strip(), text.strip(), slug, i)
         finally:
             browser.close()
 
