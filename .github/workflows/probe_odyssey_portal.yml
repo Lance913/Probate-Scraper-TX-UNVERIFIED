@@ -1,0 +1,66 @@
+name: Probe Odyssey Portal (Dallas / Travis)
+
+# Throwaway investigation workflow -- see SYSTEM_GUIDE.md S6. Safe to delete
+# once scrapers/dallas.py + scrapers/travis.py (or a shared module) are
+# written and confirmed working via daily_scrape.yml dry runs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Portal base URL to probe'
+        required: true
+        default: 'https://courtsportal.dallascounty.org/DALLASPROD'
+      county:
+        description: 'County label (for logging/screenshot filenames)'
+        required: true
+        default: 'Dallas'
+      click_path:
+        description: 'Pipe-separated link/button text to click through in sequence, e.g. "Case Records|Probate"'
+        required: false
+        default: ''
+      extra_paths:
+        description: 'Pipe-separated relative paths (under base_url) to also load, e.g. "/Home/Dashboard/29|/SmartSearch/SmartSearch"'
+        required: false
+        default: ''
+      direct_urls:
+        description: 'Pipe-separated FULL URLs to also load verbatim (e.g. a hypothesized results query URL)'
+        required: false
+        default: ''
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright Chromium + system deps
+        run: playwright install --with-deps chromium
+
+      - name: Run probe
+        run: |
+          python probe_odyssey_portal.py \
+            --base-url "${{ github.event.inputs.base_url }}" \
+            --county "${{ github.event.inputs.county }}" \
+            --click "${{ github.event.inputs.click_path }}" \
+            --extra-paths "${{ github.event.inputs.extra_paths }}" \
+            --direct-urls "${{ github.event.inputs.direct_urls }}"
+
+      - name: Upload screenshots + network log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-${{ github.event.inputs.county }}-${{ github.run_id }}
+          path: |
+            probe_*.png
+            probe_*_network.json
+          if-no-files-found: warn
