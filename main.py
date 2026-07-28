@@ -30,6 +30,8 @@ from scrapers import (
     # Add each county's scraper class here as it's built, e.g.:
     # CollinCountyScraper,
     # BexarCountyScraper,
+    TarrantCountyScraper,
+    DentonCountyScraper,
 )
 import sheets_writer
 
@@ -42,13 +44,19 @@ logger = logging.getLogger('main')
 
 # Add each county's slug here as its scraper is completed and merged.
 ALL_COUNTIES = [
-    # 'collin', 'dallas', 'ellis', 'bexar', 'tarrant', 'denton', 'johnson',
-    # 'harris', 'travis',
+    # 'collin', 'dallas', 'ellis', 'bexar', 'harris', 'travis',
+    'tarrant', 'denton',
+    # 'johnson' -- NOT wired in yet; the DistrictClerkPA/CountyClerkPA
+    # portal URL is still unresolved (connection-reset from GitHub Actions
+    # across multiple attempts). See scrapers/counties.py and the PR
+    # description for details.
 ]
 
 SCRAPER_MAP = {
     # 'collin': CollinCountyScraper,
     # 'bexar':  BexarCountyScraper,
+    'tarrant': TarrantCountyScraper,
+    'denton':  DentonCountyScraper,
 }
 
 
