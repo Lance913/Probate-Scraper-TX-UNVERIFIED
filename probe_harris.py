@@ -62,7 +62,13 @@ def safe_dump(page, slug, tries=3):
 
 
 def click_postback(page, target, arg=''):
-    page.evaluate("(a) => __doPostBack(a[0], a[1])", [target, arg])
+    # f-string interpolation (not an evaluate() arg=) -- this is the form
+    # that worked in probe v3; the arg-array-passing form
+    # `page.evaluate("(a) => __doPostBack(a[0], a[1])", [target, arg])`
+    # throws a Chromium strict-mode serialization TypeError on this page.
+    # ASP.NET control-ID targets/CommandArguments are always plain
+    # alphanumeric/$-safe strings, so naive interpolation is safe here.
+    page.evaluate(f"__doPostBack('{target}','{arg}')")
 
 
 def run_search(page):
