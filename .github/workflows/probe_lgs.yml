@@ -53,4 +53,6 @@ jobs:
             ors_after_probate_click.html
             ors_probate_results.png
             ors_probate_results_frame_*.html
+            ors_case_detail.png
+            ors_case_detail.html
           if-no-files-found: warn

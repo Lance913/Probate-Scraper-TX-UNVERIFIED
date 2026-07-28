@@ -645,6 +645,109 @@ def main():
             except Exception as e:
                 log.info(f"[{label}] table dump FAILED: {str(e)[:200]}")
 
+        # ── PHASE 6 — Click "More Information" on row 1, dump case detail ──
+        # The results frame's static template has a "Probate Pop-Up (Case
+        # Detail)" panel (PANELTBL_22) with a "Representative Information"
+        # grid (GRIDTBL_22B, fields P_109/P_110/P_111) that has NO visible
+        # header labels in the static HTML -- headers are likely injected by
+        # JS only once populated. This is our best lead for
+        # executor/administrator name+address (the actionable contact), so
+        # click into a real case and read the rendered grid.
+        log.info("=" * 70)
+        log.info("PHASE 6 — Click 'More Information' on first result row")
+        log.info("=" * 70)
+
+        results_frame = get_frame_by_name('update')
+        if not results_frame:
+            log.error("Could not find 'update' frame with results — aborting Phase 6.")
+            browser.close()
+            return
+
+        try:
+            more_info_btn = results_frame.locator('button:has-text("More Information"), a:has-text("More Information")').first
+            log.info(f"'More Information' control count on page: "
+                     f"{results_frame.locator(':text(\"More Information\")').count()}")
+            more_info_btn.click(timeout=10000)
+            log.info("Clicked first 'More Information' control")
+        except Exception as e:
+            log.error(f"Click 'More Information' FAILED: {str(e)[:300]}")
+            browser.close()
+            return
+
+        page.wait_for_timeout(6000)
+        try:
+            page.wait_for_load_state('load', timeout=10000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
+
+        try:
+            page.screenshot(path='ors_case_detail.png', full_page=True)
+            log.info("Saved screenshot -> ors_case_detail.png")
+        except Exception as e:
+            log.info(f"screenshot FAILED: {str(e)[:200]}")
+
+        detail_frame = get_frame_by_name('update')
+        if not detail_frame:
+            log.error("'update' frame gone after More Information click — aborting.")
+            browser.close()
+            return
+
+        safe_body_text(detail_frame, 'case-detail frame', limit=6000)
+
+        try:
+            fr_html = detail_frame.content()
+            with open('ors_case_detail.html', 'w') as f:
+                f.write(fr_html)
+            log.info(f"Saved raw HTML ({len(fr_html)} chars) -> ors_case_detail.html")
+        except Exception as e:
+            log.info(f"content() FAILED: {str(e)[:200]}")
+
+        # Dump the populated Case Information fields (P_97..P_108) by value,
+        # and the Representative Information grid (P_109/P_110/P_111) with
+        # whatever header text now exists, plus the raw <table> dump for
+        # cross-check.
+        try:
+            case_fields = detail_frame.evaluate("""() => {
+                const ids = ['P_97','P_98','P_99','P_100','P_101','P_102','P_103','P_104','P_105','P_106','P_107','P_108'];
+                const out = {};
+                for (const id of ids) {
+                    const el = document.querySelector(`[name="${id}"]`);
+                    out[id] = el ? el.value : null;
+                }
+                return out;
+            }""")
+            log.info(f"Case Information field values: {case_fields}")
+        except Exception as e:
+            log.info(f"case_fields dump FAILED: {str(e)[:300]}")
+
+        try:
+            rep_grid = detail_frame.evaluate("""() => {
+                const tbl = document.getElementById('GRIDTBL_22B');
+                if (!tbl) return null;
+                return Array.from(tbl.rows).map(r => Array.from(r.cells).map(c => {
+                    const inp = c.querySelector('input,textarea');
+                    return inp ? inp.value : c.textContent.trim();
+                }));
+            }""")
+            log.info(f"Representative Information grid (GRIDTBL_22B) rows: {rep_grid}")
+        except Exception as e:
+            log.info(f"rep_grid dump FAILED: {str(e)[:300]}")
+
+        try:
+            all_tables = detail_frame.evaluate("""() => {
+                const tables = Array.from(document.querySelectorAll('table'));
+                return tables.map((t,i) => ({
+                    idx: i, id: t.id||'',
+                    rows: Array.from(t.rows).slice(0,6).map(r => Array.from(r.cells).map(c => c.textContent.trim().slice(0,50)))
+                })).filter(t => t.id.includes('22') || t.id.includes('GRID'));
+            }""")
+            log.info(f"All 22*/GRID tables (up to 6 rows each): {all_tables}")
+        except Exception as e:
+            log.info(f"all_tables dump FAILED: {str(e)[:300]}")
+
+        dump_form(detail_frame, 'case-detail frame')
+
         browser.close()
 
 
