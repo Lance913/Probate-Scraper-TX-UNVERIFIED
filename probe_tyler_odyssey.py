@@ -324,133 +324,31 @@ def phase1_sweep(pw):
 # ─────────────────────────────────────────────────────────────────────────
 
 def phase2_tarrant(pw):
+    """Tarrant's WAF block is now CONFIRMED (this probe's own run 1, cross-
+    verified independently by a sibling agent on Collin across 3 browser
+    engines/fresh sessions/re-navigation). Per project policy we do not
+    attempt to solve/bypass it (no more clicking 'Begin' and polling) -- this
+    phase is now just a quick, cheap re-confirmation that the block is still
+    the shape we think it is, nothing more."""
     log.info("=" * 70)
-    log.info("PHASE 2 -- TARRANT deep dive")
+    log.info("PHASE 2 -- TARRANT re-confirmation (lightweight; block already confirmed)")
     log.info("=" * 70)
     browser = pw.chromium.launch(headless=True, args=['--disable-blink-features=AutomationControlled'])
     ctx, page = new_context(browser)
     try:
-        resp = page.goto(TARRANT_URL, wait_until='networkidle', timeout=25000)
-        page.wait_for_timeout(1500)
-        log.info(f"tarrant: status={resp.status if resp else None} final_url={page.url!r} title={page.title()!r}")
-        dismiss_overlays(page, 'tarrant landing')
-        check_waf(page, 'tarrant landing')
-        links = dump_nav_links(page, 'tarrant landing')
-        snapshot(page, 'tarrant_landing')
-
-        probate_links = [l for l in links if 'probate' in l['text'].lower()]
-        log.info(f"tarrant: probate-labelled links: {probate_links}")
-
-        if not probate_links:
-            log.warning("tarrant: no link with 'Probate' in its text -- will try the location "
-                        "<select> + generic 'Case Records' link instead.")
-
-        navigated = False
-        if probate_links:
-            href = probate_links[0]['href']
-            m = re.search(r"LaunchSearch\('([^']+)'", href)
-            if m:
-                target = m.group(1)
-                # Resolve relative to the PublicAccess base
-                base = TARRANT_URL.rsplit('/', 1)[0] + '/'
-                full = base + target
-                log.info(f"tarrant: navigating directly to resolved Probate search URL: {full}")
-                try:
-                    page.goto(full, wait_until='networkidle', timeout=25000)
-                    page.wait_for_timeout(1500)
-                    navigated = True
-                except Exception as e:
-                    log.warning(f"tarrant: direct nav to {full} failed: {e}")
-            if not navigated:
-                navigated = click_first_matching(page, ['a:has-text("Probate Case Records")'], 'tarrant')
-
-        if not navigated:
-            navigated = click_first_matching(
-                page, ['a:has-text("Case Records")', 'a:has-text("Case Records Search")'], 'tarrant')
-
-        log.info(f"tarrant: navigated to a search entry point: {navigated}")
-        if not navigated:
-            log.error("tarrant: could not find ANY case-records entry point. Stopping deep dive.")
-            browser.close()
-            return
-
-        log.info(f"tarrant: post-nav title={page.title()!r} url={page.url!r}")
-        snapshot(page, 'tarrant_search_entry')
-
-        cleared = try_clear_waf(page, 'tarrant')
-        if not cleared:
-            log.error("tarrant: BLOCKED by WAF human-verification wall on the search entry point. "
-                       "This is the critical open question for Tarrant -- flagging and stopping here.")
-            browser.close()
-            return
-
-        # Dump whatever search form we landed on.
-        dismiss_overlays(page, 'tarrant search form')
-        dump_form(page, 'tarrant search form')
-        dump_nav_links(page, 'tarrant search form', limit=40)
-        snapshot(page, 'tarrant_search_form')
-
-        # Best-effort: try to locate & set a Date Filed range + submit with blank name,
-        # to see whether a blank/wildcard party search is permitted.
-        start_fmt = WINDOW_START.strftime('%m/%d/%Y')
-        end_fmt = TODAY.strftime('%m/%d/%Y')
-        filled_dates = False
-        for s_sel, e_sel in [
-            ('input[id*="DateFiledOnAfter" i]', 'input[id*="DateFiledOnBefore" i]'),
-            ('input[id*="DateFrom" i]', 'input[id*="DateTo" i]'),
-            ('input[name*="DateFrom" i]', 'input[name*="DateTo" i]'),
-            ('input[id*="From" i][id*="Date" i]', 'input[id*="To" i][id*="Date" i]'),
-        ]:
-            try:
-                if page.locator(s_sel).count() > 0 and page.locator(e_sel).count() > 0:
-                    page.fill(s_sel, start_fmt)
-                    page.fill(e_sel, end_fmt)
-                    log.info(f"tarrant: filled date range via {s_sel!r}/{e_sel!r} -> {start_fmt}..{end_fmt}")
-                    filled_dates = True
-                    break
-            except Exception as e:
-                log.info(f"tarrant: date fill attempt {s_sel!r} failed: {e}")
-        log.info(f"tarrant: date range filled: {filled_dates}")
-
-        submitted = click_first_matching(page, [
-            'input[id*="SearchSubmit" i]', 'button[id*="SearchSubmit" i]',
-            'input[value="Search" i]', 'button:has-text("Search")',
-            'input[type="submit"]',
-        ], 'tarrant')
-        log.info(f"tarrant: submitted search: {submitted}")
-
-        if submitted:
-            page.wait_for_timeout(3000)
-            try:
-                page.wait_for_load_state('networkidle', timeout=15000)
-            except Exception:
-                pass
-            log.info(f"tarrant: post-submit title={page.title()!r} url={page.url!r}")
-            snapshot(page, 'tarrant_results')
-            cleared2 = try_clear_waf(page, 'tarrant results')
-            if cleared2:
-                dump_table(page, 'tarrant results')
-                dump_nav_links(page, 'tarrant results', limit=30)
-
-                # Try to open the first case detail link, if any case-number-shaped link exists.
-                case_links = page.evaluate("""() => Array.from(document.querySelectorAll('a'))
-                    .map(a => ({text:(a.textContent||'').trim(), href:a.getAttribute('href')||''}))
-                    .filter(l => /^\\d{2,4}-\\d+|^[A-Z]?\\d{5,}/.test(l.text));""")
-                log.info(f"tarrant: {len(case_links)} case-number-shaped links found; sample: {case_links[:5]}")
-                if case_links:
-                    try:
-                        page.click(f"a:has-text(\"{case_links[0]['text']}\")")
-                        page.wait_for_timeout(2500)
-                        page.wait_for_load_state('networkidle', timeout=15000)
-                        log.info(f"tarrant: case detail title={page.title()!r} url={page.url!r}")
-                        snapshot(page, 'tarrant_case_detail')
-                        detail_text = page.inner_text('body')
-                        log.info(f"tarrant: case detail body ({len(detail_text)} chars):\n{detail_text[:6000]}")
-                    except Exception as e:
-                        log.warning(f"tarrant: could not open case detail: {e}")
+        page.goto(TARRANT_URL, wait_until='networkidle', timeout=25000)
+        page.wait_for_timeout(1200)
+        navigated = click_first_matching(
+            page, ['a:has-text("Case Records")', 'a:has-text("Case Records Search")'], 'tarrant')
+        log.info(f"tarrant: navigated to search entry: {navigated}")
+        if navigated:
+            log.info(f"tarrant: post-nav title={page.title()!r} url={page.url!r}")
+            markers = check_waf(page, 'tarrant')
+            log.info(f"tarrant: WAF block still present: "
+                     f"{markers.get('awswaf') or 'human verification' in (markers.get('title') or '').lower()}")
         browser.close()
     except Exception as exc:
-        log.error(f"tarrant: fatal error in deep dive: {exc}", exc_info=True)
+        log.error(f"tarrant: error in re-confirmation: {exc}", exc_info=True)
         try:
             browser.close()
         except Exception:
@@ -462,133 +360,100 @@ def phase2_tarrant(pw):
 # dedicated iteration once Tarrant is solid)
 # ─────────────────────────────────────────────────────────────────────────
 
-def phase3_denton(pw):
-    log.info("=" * 70)
-    log.info("PHASE 3 -- Denton recon")
-    log.info("=" * 70)
+def _denton_search_one_court(pw, node_value: str, node_text: str):
+    """Full flow for ONE location/court value: land, select it in the
+    sbxControlID2 dropdown (this is what LaunchSearch() actually reads --
+    NOT the querystring, confirmed by reading the landing page's inline JS:
+    it dynamically builds a POST form with hidden NodeID=<select.value> /
+    NodeDesc=<select selected option text> and submits THAT -- a direct
+    page.goto() to Search.aspx?ID=200 leaves NodeID blank and gets bounced
+    back to default.aspx by the server, which is what v2 of this probe hit),
+    then click the real link so LaunchSearch() runs for real."""
+    label = f"denton[{node_text}]"
     browser = pw.chromium.launch(headless=True, args=['--disable-blink-features=AutomationControlled'])
     ctx, page = new_context(browser)
     try:
-        resp = page.goto(DENTON_URL, wait_until='networkidle', timeout=25000)
-        page.wait_for_timeout(1500)
-        log.info(f"denton: status={resp.status if resp else None} final_url={page.url!r} title={page.title()!r}")
-        dismiss_overlays(page, 'denton landing')
-        check_waf(page, 'denton landing')
-        links = dump_nav_links(page, 'denton landing')
-        snapshot(page, 'denton_landing')
+        page.goto(DENTON_URL, wait_until='networkidle', timeout=25000)
+        page.wait_for_timeout(1000)
+        page.select_option('#sbxControlID2', value=node_value)
+        page.wait_for_timeout(500)
+        log.info(f"{label}: selected location dropdown -> value={node_value!r} text={node_text!r}")
 
-        probate_links = [l for l in links if 'probate' in l['text'].lower()]
-        log.info(f"denton: probate-labelled links: {probate_links}")
-        if not probate_links:
-            body = page.inner_text('body')
-            log.info(f"denton: full landing body text ({len(body)} chars):\n{body[:4000]}")
-
-        navigated = False
-        if probate_links:
-            href = probate_links[0]['href']
-            m = re.search(r"LaunchSearch\('([^']+)'", href)
-            if m:
-                base = DENTON_URL.rstrip('/') + '/'
-                full = base + m.group(1)
-                log.info(f"denton: navigating directly to resolved Probate search URL: {full}")
-                try:
-                    page.goto(full, wait_until='networkidle', timeout=25000)
-                    page.wait_for_timeout(1500)
-                    navigated = True
-                except Exception as e:
-                    log.warning(f"denton: direct nav failed: {e}")
-            if not navigated:
-                navigated = click_first_matching(page, ['a:has-text("Probate Case Records")'], 'denton')
+        navigated = click_first_matching(
+            page, ['a:has-text("Civil, Family & Probate Case Records")',
+                   'a:has-text("Case Records")'], label)
+        log.info(f"{label}: navigated to search entry: {navigated}")
         if not navigated:
-            navigated = click_first_matching(
-                page, ['a:has-text("Case Records")', 'a:has-text("Case Records Search")'], 'denton')
+            browser.close()
+            return
 
-        log.info(f"denton: navigated to a search entry point: {navigated}")
-        if navigated:
-            log.info(f"denton: post-nav title={page.title()!r} url={page.url!r}")
-            snapshot(page, 'denton_search_entry')
-            cleared = try_clear_waf(page, 'denton')
-            if cleared:
-                dismiss_overlays(page, 'denton search form')
-                dump_form(page, 'denton search form')
+        log.info(f"{label}: post-nav title={page.title()!r} url={page.url!r}")
+        # Confirm NodeID actually got set this time (the whole point of this rewrite).
+        node_id_val = page.evaluate("() => document.querySelector('input[name=\"NodeID\"]')?.value")
+        node_desc_val = page.evaluate("() => document.querySelector('input[name=\"NodeDesc\"]')?.value")
+        log.info(f"{label}: NodeID={node_id_val!r} NodeDesc={node_desc_val!r} (should be non-blank now)")
+        snapshot(page, f'denton_{node_text}_search_entry')
 
-                # Switch to "Date Filed" search mode (id=DateFiled, name=SearchBy,
-                # value=6) -- Party mode requires a Last Name (confirmed via
-                # screenshot), which we don't have for a blind daily scrape.
+        if try_clear_waf(page, label):
+            page.check('#DateFiled')
+            page.wait_for_timeout(1000)
+            start_fmt = WINDOW_START.strftime('%m/%d/%Y')
+            end_fmt = TODAY.strftime('%m/%d/%Y')
+            page.fill('#DateFiledOnAfter', start_fmt)
+            page.fill('#DateFiledOnBefore', end_fmt)
+            log.info(f"{label}: date range {start_fmt}..{end_fmt}")
+            snapshot(page, f'denton_{node_text}_pre_submit')
+
+            submitted = click_first_matching(page, ['#SearchSubmit'], label)
+            log.info(f"{label}: submitted: {submitted}")
+            if submitted:
+                page.wait_for_timeout(3000)
                 try:
-                    page.check('#DateFiled')
-                    page.wait_for_timeout(1500)
-                    log.info("denton: switched SearchBy to 'Date Filed' -- form after switch:")
-                    dump_form(page, 'denton date-filed mode')
-                    snapshot(page, 'denton_date_filed_mode')
-                except Exception as e:
-                    log.warning(f"denton: could not switch to Date Filed mode: {e}")
+                    page.wait_for_load_state('networkidle', timeout=15000)
+                except Exception:
+                    pass
+                log.info(f"{label}: post-submit title={page.title()!r} url={page.url!r}")
+                snapshot(page, f'denton_{node_text}_results')
+                if try_clear_waf(page, f'{label} results'):
+                    dump_table(page, f'{label} results')
+                    body = page.inner_text('body')
+                    log.info(f"{label}: results body ({len(body)} chars) first 2000:\n{body[:2000]}")
 
-                # Scope to Probate only if the case-category checkboxes are
-                # actually interactive (best-effort; harmless if already hidden
-                # / non-interactive -- we fall back to client-side filtering
-                # via base.py's is_estate_case() either way).
-                for uncheck_id in ['chkCriminal', 'chkFamily', 'chkCivil',
-                                   'chkDtRangeCriminal', 'chkDtRangeFamily', 'chkDtRangeCivil']:
-                    try:
-                        el = page.locator(f'#{uncheck_id}')
-                        if el.count() > 0:
-                            el.uncheck(force=True, timeout=3000)
-                            log.info(f"denton: unchecked #{uncheck_id}")
-                    except Exception as e:
-                        log.info(f"denton: could not uncheck #{uncheck_id}: {str(e)[:150]}")
-
-                start_fmt = WINDOW_START.strftime('%m/%d/%Y')
-                end_fmt = TODAY.strftime('%m/%d/%Y')
-                filled = False
-                for s_sel, e_sel in [('#DateFiledOnAfter', '#DateFiledOnBefore')]:
-                    try:
-                        if page.locator(s_sel).count() > 0:
-                            page.fill(s_sel, start_fmt)
-                            page.fill(e_sel, end_fmt)
-                            filled = True
-                            log.info(f"denton: filled date range {start_fmt}..{end_fmt}")
-                    except Exception as e:
-                        log.warning(f"denton: date fill failed: {e}")
-                log.info(f"denton: date range filled: {filled}")
-                snapshot(page, 'denton_pre_submit')
-
-                submitted = click_first_matching(page, ['#SearchSubmit', 'input[value="Search" i]'], 'denton')
-                log.info(f"denton: submitted search: {submitted}")
-                if submitted:
-                    page.wait_for_timeout(3000)
-                    try:
-                        page.wait_for_load_state('networkidle', timeout=15000)
-                    except Exception:
-                        pass
-                    log.info(f"denton: post-submit title={page.title()!r} url={page.url!r}")
-                    snapshot(page, 'denton_results')
-                    cleared2 = try_clear_waf(page, 'denton results')
-                    if cleared2:
-                        dump_table(page, 'denton results')
-
-                        case_links = page.evaluate("""() => Array.from(document.querySelectorAll('a'))
-                            .map(a => ({text:(a.textContent||'').trim(), href:a.getAttribute('href')||''}))
-                            .filter(l => /^\\d{2,4}-\\d+|^[A-Z]{1,3}-?\\d{2,4}-\\d+/.test(l.text));""")
-                        log.info(f"denton: {len(case_links)} case-number-shaped links; sample: {case_links[:8]}")
-                        if case_links:
-                            try:
-                                page.click(f"a:has-text(\"{case_links[0]['text']}\")")
-                                page.wait_for_timeout(2500)
-                                page.wait_for_load_state('networkidle', timeout=15000)
-                                log.info(f"denton: case detail title={page.title()!r} url={page.url!r}")
-                                snapshot(page, 'denton_case_detail')
-                                detail_text = page.inner_text('body')
-                                log.info(f"denton: case detail body ({len(detail_text)} chars):\n{detail_text[:6000]}")
-                            except Exception as e:
-                                log.warning(f"denton: could not open case detail: {e}")
+                    case_links = page.evaluate("""() => Array.from(document.querySelectorAll('a'))
+                        .map(a => ({text:(a.textContent||'').trim(), href:a.getAttribute('href')||''}))
+                        .filter(l => /^\\d{2,4}-\\d+|^[A-Z]{1,3}-?\\d{2,4}-\\d+/.test(l.text));""")
+                    log.info(f"{label}: {len(case_links)} case-number-shaped links; sample: {case_links[:10]}")
+                    if case_links:
+                        try:
+                            page.click(f"a:has-text(\"{case_links[0]['text']}\")")
+                            page.wait_for_timeout(2500)
+                            page.wait_for_load_state('networkidle', timeout=15000)
+                            log.info(f"{label}: case detail title={page.title()!r} url={page.url!r}")
+                            snapshot(page, f'denton_{node_text}_case_detail')
+                            detail_text = page.inner_text('body')
+                            log.info(f"{label}: case detail body ({len(detail_text)} chars):\n{detail_text[:7000]}")
+                        except Exception as e:
+                            log.warning(f"{label}: could not open case detail: {e}")
         browser.close()
     except Exception as exc:
-        log.error(f"denton: error in recon: {exc}", exc_info=True)
+        log.error(f"{label}: error: {exc}", exc_info=True)
         try:
             browser.close()
         except Exception:
             pass
+
+
+def phase3_denton(pw):
+    log.info("=" * 70)
+    log.info("PHASE 3 -- Denton: proper NodeID-scoped Probate search")
+    log.info("=" * 70)
+    # Denton has TWO numbered probate courts as distinct dropdown options
+    # (confirmed by parsing the landing page's <select id="sbxControlID2">):
+    # value="1101" text="Probate Court", value="1108" text="Probate Court #2".
+    # No single combined "all probate" option exists for this county (unlike
+    # Tarrant, which has one) -- run both.
+    for value, text in [('1101', 'Probate Court'), ('1108', 'Probate Court #2')]:
+        _denton_search_one_court(pw, value, text)
 
 
 # ─────────────────────────────────────────────────────────────────────────
