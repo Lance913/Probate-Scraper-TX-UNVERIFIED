@@ -260,7 +260,14 @@ def human_like_attempt(page, submit_which: str):
     page.keyboard.press('Escape')
 
     main_box = page.locator('#caseCriteria_SearchCriteria').first
-    main_box.click()
+    main_box_count = page.locator('#caseCriteria_SearchCriteria').count()
+    main_box_vis = main_box.is_visible() if main_box_count else 'N/A'
+    log.info(f"caseCriteria_SearchCriteria: count={main_box_count} visible={main_box_vis}")
+    try:
+        main_box.click(timeout=5000)
+    except Exception as e:
+        log.warning(f"main_box normal click failed ({str(e)[:150]}) -- retrying with force=True")
+        main_box.click(force=True, timeout=5000)
     main_box.fill('')
     main_box.type('SMITH*', delay=60)
     page.wait_for_timeout(400)
@@ -273,8 +280,13 @@ def human_like_attempt(page, submit_which: str):
     count = submit_btn.count()
     log.info(f"#btnSSSubmit matched elements: {count}")
     target = submit_btn.first if submit_which == 'first' else submit_btn.last
+    log.info(f"submit target ({submit_which}) visible={target.is_visible()}")
     pre = len(_net_hits)
-    target.click(timeout=10000)
+    try:
+        target.click(timeout=10000)
+    except Exception as e:
+        log.warning(f"submit click failed ({str(e)[:150]}) -- retrying with force=True")
+        target.click(force=True, timeout=10000)
     try:
         page.wait_for_load_state('domcontentloaded', timeout=10000)
     except Exception as e:
