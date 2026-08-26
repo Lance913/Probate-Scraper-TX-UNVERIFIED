@@ -31,6 +31,7 @@ from scrapers import (
     # CollinCountyScraper,
     # BexarCountyScraper,
     HarrisCountyScraper,
+    EllisCountyScraper,
 )
 import sheets_writer
 
@@ -43,15 +44,16 @@ logger = logging.getLogger('main')
 
 # Add each county's slug here as its scraper is completed and merged.
 ALL_COUNTIES = [
-    # 'collin', 'dallas', 'ellis', 'bexar', 'tarrant', 'denton', 'johnson',
-    # 'travis',
+    # 'collin', 'dallas', 'bexar', 'tarrant', 'denton', 'johnson', 'travis',
     'harris',
+    'ellis',
 ]
 
 SCRAPER_MAP = {
     # 'collin': CollinCountyScraper,
     # 'bexar':  BexarCountyScraper,
     'harris': HarrisCountyScraper,
+    'ellis': EllisCountyScraper,
 }
 
 
@@ -125,16 +127,16 @@ def main():
     if args.from_json:
         records = [r for r in load_records(args.from_json) if _useful(r)]
         logger.info(f"Total records loaded: {len(records)}")
-        if not records:
-            logger.warning("No records to write.")
-            return
+        pull_date = (datetime.strptime(args.date, '%Y-%m-%d')
+                     if args.date else datetime.now()).strftime('%m/%d/%Y')
         if args.dry_run:
             logger.info("DRY RUN — not writing to Sheets")
             for r in records:
                 logger.info(r)
             return
-        pull_date = (datetime.strptime(args.date, '%Y-%m-%d')
-                     if args.date else datetime.now()).strftime('%m/%d/%Y')
+        # Update the tracker even when zero records came in — a day with
+        # genuinely no new leads should show as an explicit 0 row, not a
+        # silent gap that's indistinguishable from the job never having run.
         scanned_by_county = Counter(r.get('county', '') for r in records)
         new_records = sheets_writer.write_records(records, pull_date=pull_date)
         new_by_county = Counter(r.get('county', '') for r in new_records)
