@@ -30,6 +30,7 @@ from scrapers import (
     # Add each county's scraper class here as it's built, e.g.:
     # CollinCountyScraper,
     # BexarCountyScraper,
+    HarrisCountyScraper,
     EllisCountyScraper,
 )
 import sheets_writer
@@ -43,14 +44,15 @@ logger = logging.getLogger('main')
 
 # Add each county's slug here as its scraper is completed and merged.
 ALL_COUNTIES = [
-    # 'collin', 'dallas', 'bexar', 'tarrant', 'denton', 'johnson',
-    # 'harris', 'travis',
+    # 'collin', 'dallas', 'bexar', 'tarrant', 'denton', 'johnson', 'travis',
+    'harris',
     'ellis',
 ]
 
 SCRAPER_MAP = {
     # 'collin': CollinCountyScraper,
     # 'bexar':  BexarCountyScraper,
+    'harris': HarrisCountyScraper,
     'ellis': EllisCountyScraper,
 }
 

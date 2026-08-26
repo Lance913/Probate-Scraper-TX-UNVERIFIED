@@ -14,7 +14,8 @@ architecture, GitHub Actions patterns, and lessons apply directly here).
 |---------|-----------------------------------------------------------|
 | Bexar   | portal-txbexar.tylertech.cloud |
 | Collin  | cijspub.co.collin.tx.us/PublicAccess (Tyler Odyssey) |
-| Dallas, Ellis, Tarrant, Denton, Johnson, Harris, Travis | not yet identified — needs discovery (SYSTEM_GUIDE.md §7 step 1) before probing |
+| Harris  | cclerk.hctx.net/applications/websearch/CourtSearch.aspx?CaseType=Probate (standalone Harris County Clerk ASP.NET case-search system — same domain as the existing foreclosure scraper, but a different, custom application, not Tyler/Odyssey) |
+| Dallas, Ellis, Tarrant, Denton, Johnson, Travis | not yet identified — needs discovery (SYSTEM_GUIDE.md §7 step 1) before probing |
 
 **Fields captured:** Decedent First Name · Decedent Last Name · Property
 Address (best-effort — often unavailable; a probate case index is

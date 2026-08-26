@@ -15,6 +15,7 @@ Add each new county's import + name below as its scraper is completed:
     __all__ = ['CollinCountyScraper', 'BexarCountyScraper', ...]
 """
 
+from .harris import HarrisCountyScraper
 from .ellis import EllisCountyScraper
 
-__all__ = ['EllisCountyScraper']
+__all__ = ['HarrisCountyScraper', 'EllisCountyScraper']
