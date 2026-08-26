@@ -236,12 +236,16 @@ def human_like_attempt(page, submit_which: str):
     # actionability check) if a normal fill can't proceed. This mirrors the
     # exact class of bug hit on Ellis's DocTypesList and Travis's date-range
     # control this session: a native input hidden behind a widget overlay.
-    start_loc = page.locator('input[name*="FileDateStart" i]').first
-    end_loc = page.locator('input[name*="FileDateEnd" i]').first
-    log.info(f"FileDateStart: count={page.locator('input[name*=\"FileDateStart\" i]').count()} "
-             f"visible={start_loc.is_visible() if start_loc.count() else 'N/A'}")
-    log.info(f"FileDateEnd: count={page.locator('input[name*=\"FileDateEnd\" i]').count()} "
-             f"visible={end_loc.is_visible() if end_loc.count() else 'N/A'}")
+    start_selector = 'input[name*="FileDateStart" i]'
+    end_selector = 'input[name*="FileDateEnd" i]'
+    start_loc = page.locator(start_selector).first
+    end_loc = page.locator(end_selector).first
+    start_count = page.locator(start_selector).count()
+    end_count = page.locator(end_selector).count()
+    start_vis = start_loc.is_visible() if start_count else 'N/A'
+    end_vis = end_loc.is_visible() if end_count else 'N/A'
+    log.info(f"FileDateStart: count={start_count} visible={start_vis}")
+    log.info(f"FileDateEnd: count={end_count} visible={end_vis}")
     try:
         start_loc.fill(WINDOW_START.strftime('%m/%d/%Y'), timeout=5000)
     except Exception as e:
