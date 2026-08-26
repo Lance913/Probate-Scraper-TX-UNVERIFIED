@@ -558,12 +558,63 @@ def phase4_johnson(pw):
                     pass
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 5 -- Johnson deep dive: confirmed live + NOT WAF-blocked (phase 4).
+# No dedicated "Probate" option in the location dropdown though (unlike
+# Tarrant/Collin), so probate likely lives inside "All County Courts" the
+# way it does for Ellis/Denton (a County Court at Law matter). Reuses the
+# exact _denton_search_one_court flow/selectors as a first guess -- Johnson
+# may not share Denton's field IDs even though it's the same product, so
+# every step is logged rather than assumed silently.
+# ─────────────────────────────────────────────────────────────────────────
+
+JOHNSON_URL = JOHNSON_CANDIDATES['tylertech_cloud']
+
+
+def phase5_johnson_deep(pw):
+    log.info("=" * 70)
+    log.info("PHASE 5 -- Johnson: deep dive on 'All County Courts'")
+    log.info("=" * 70)
+    label = "johnson[All County Courts]"
+    browser = pw.chromium.launch(headless=True, args=['--disable-blink-features=AutomationControlled'])
+    ctx, page = new_context(browser)
+    try:
+        page.goto(JOHNSON_URL, wait_until='networkidle', timeout=25000)
+        page.wait_for_timeout(1000)
+        page.select_option('#sbxControlID2', value='100,110,120,130,140')
+        page.wait_for_timeout(500)
+        log.info(f"{label}: selected 'All County Courts' in location dropdown")
+        dump_nav_links(page, label)
+
+        navigated = click_first_matching(
+            page, ['a:has-text("Civil & Probate Records")',
+                   'a:has-text("Civil, Family & Probate Case Records")',
+                   'a:has-text("Case Records")'], label)
+        log.info(f"{label}: navigated to search entry: {navigated}")
+        if not navigated:
+            browser.close()
+            return
+
+        log.info(f"{label}: post-nav title={page.title()!r} url={page.url!r}")
+        snapshot(page, 'johnson_search_entry')
+        check_waf(page, label)
+        dump_form(page, label)  # log real field IDs -- don't assume Denton's
+    except Exception as exc:
+        log.error(f"{label}: error: {exc}", exc_info=True)
+    finally:
+        try:
+            browser.close()
+        except Exception:
+            pass
+
+
 def main():
     with sync_playwright() as pw:
         phase1_sweep(pw)
         phase2_tarrant(pw)
         phase3_denton(pw)
         phase4_johnson(pw)
+        phase5_johnson_deep(pw)
     log.info("=" * 70)
     log.info(f"DONE. probe_out/ contains {len(os.listdir(OUT_DIR))} files.")
 
