@@ -1,0 +1,58 @@
+name: Probe LGS (Ellis)
+
+on:
+  workflow_dispatch: {}
+  # workflow_dispatch alone isn't reliably dispatchable by name until the
+  # workflow file exists on the default branch. This is a throwaway probe
+  # living only on this branch, so also trigger on push-to-this-branch
+  # (same pattern used by the sibling add-collin/add-bexar probe branches in
+  # this repo) — avoids touching main just to run a probe.
+  push:
+    branches: [add-ellis-probate-scraper]
+    paths:
+      - 'probe_lgs.py'
+      - '.github/workflows/probe_lgs.yml'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Run probe
+        run: python probe_lgs.py
+
+      - name: Upload diagnostics (screenshot + HTML)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lgs-probe-diagnostics
+          path: |
+            ors_landing.png
+            ors_landing.html
+            ors_frame_*.html
+            ors_after_guest_login.png
+            ors_postlogin_frame_*.html
+            ors_after_continue.png
+            ors_after_search_click.png
+            ors_phase3_frame_*.html
+            ors_after_office_select.png
+            ors_after_office_select.html
+            ors_after_probate_click.png
+            ors_after_probate_click.html
+            ors_probate_results.png
+            ors_probate_results_frame_*.html
+            ors_case_detail.png
+            ors_case_detail.html
+          if-no-files-found: warn
