@@ -227,8 +227,8 @@ def human_like_attempt(page, submit_which: str):
     page.wait_for_timeout(300)
     page.keyboard.press('Enter')
     page.wait_for_timeout(800)
-    log.info(f"Location input value after real typing+Enter: "
-              f"{page.evaluate('document.getElementById(\"caseCriteria_CourtLocation\").value')!r}")
+    loc_value = page.evaluate('document.getElementById("caseCriteria_CourtLocation").value')
+    log.info(f"Location input value after real typing+Enter: {loc_value!r}")
 
     page.locator('input[name*="FileDateStart" i]').first.fill(WINDOW_START.strftime('%m/%d/%Y'))
     page.keyboard.press('Escape')
