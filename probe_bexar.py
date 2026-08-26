@@ -230,9 +230,29 @@ def human_like_attempt(page, submit_which: str):
     loc_value = page.evaluate('document.getElementById("caseCriteria_CourtLocation").value')
     log.info(f"Location input value after real typing+Enter: {loc_value!r}")
 
-    page.locator('input[name*="FileDateStart" i]').first.fill(WINDOW_START.strftime('%m/%d/%Y'))
+    # v8b: v8 hung here (20s timeout, no further log line) with no
+    # diagnosis of why -- log visibility/count for both date fields BEFORE
+    # attempting a normal fill, then fall back to force=True (bypassing the
+    # actionability check) if a normal fill can't proceed. This mirrors the
+    # exact class of bug hit on Ellis's DocTypesList and Travis's date-range
+    # control this session: a native input hidden behind a widget overlay.
+    start_loc = page.locator('input[name*="FileDateStart" i]').first
+    end_loc = page.locator('input[name*="FileDateEnd" i]').first
+    log.info(f"FileDateStart: count={page.locator('input[name*=\"FileDateStart\" i]').count()} "
+             f"visible={start_loc.is_visible() if start_loc.count() else 'N/A'}")
+    log.info(f"FileDateEnd: count={page.locator('input[name*=\"FileDateEnd\" i]').count()} "
+             f"visible={end_loc.is_visible() if end_loc.count() else 'N/A'}")
+    try:
+        start_loc.fill(WINDOW_START.strftime('%m/%d/%Y'), timeout=5000)
+    except Exception as e:
+        log.warning(f"FileDateStart normal fill failed ({str(e)[:150]}) -- retrying with force=True")
+        start_loc.fill(WINDOW_START.strftime('%m/%d/%Y'), force=True, timeout=5000)
     page.keyboard.press('Escape')
-    page.locator('input[name*="FileDateEnd" i]').first.fill(TODAY.strftime('%m/%d/%Y'))
+    try:
+        end_loc.fill(TODAY.strftime('%m/%d/%Y'), timeout=5000)
+    except Exception as e:
+        log.warning(f"FileDateEnd normal fill failed ({str(e)[:150]}) -- retrying with force=True")
+        end_loc.fill(TODAY.strftime('%m/%d/%Y'), force=True, timeout=5000)
     page.keyboard.press('Escape')
 
     main_box = page.locator('#caseCriteria_SearchCriteria').first
