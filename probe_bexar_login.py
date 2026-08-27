@@ -52,7 +52,12 @@ def main():
         page.goto(f"{BASE}/Home/Dashboard/29", wait_until='networkidle', timeout=30_000)
         page.wait_for_timeout(1000)
 
-        # Open the Register/Sign In dropdown, find the login form fields.
+        # Open the Register/Sign In dropdown -- this only toggles a menu
+        # open (confirmed by v1: no username/password fields appeared).
+        # Symmetrically with the registration probe (which needed a
+        # separate click on 'Register' inside the same dropdown), there is
+        # likely a separate 'Sign In' / 'Login' link inside this dropdown --
+        # click that next, don't assume the dropdown itself is the form.
         loc = page.get_by_text('Register / Sign In', exact=False)
         for i in range(loc.count()):
             el = loc.nth(i)
@@ -62,13 +67,36 @@ def main():
         page.wait_for_timeout(1000)
         shot(page, '01_signin_dropdown')
 
+        dropdown_html = page.evaluate("""
+            () => {
+                const el = document.querySelector('.dropdown-menu, [class*="dropdown"][style*="block"], .open .dropdown-menu');
+                return el ? el.outerHTML.slice(0, 3000) : '(no obvious dropdown-menu element found)';
+            }
+        """)
+        log.info(f"Dropdown HTML: {dropdown_html}")
+
+        for text in ['Sign In', 'Log In', 'Login']:
+            loc2 = page.get_by_text(text, exact=False)
+            found = False
+            for i in range(loc2.count()):
+                el = loc2.nth(i)
+                if el.is_visible():
+                    log.info(f"Clicking {text!r} match [{i}] inside dropdown")
+                    el.click(timeout=5000)
+                    found = True
+                    break
+            if found:
+                break
+        page.wait_for_timeout(1000)
+        shot(page, '01b_after_signin_link_click')
+
         fields = page.evaluate("""
             () => Array.from(document.querySelectorAll('input')).map(el => ({
                 type: el.type||'', id: el.id||'', name: el.name||'',
                 visible: !!(el.offsetWidth || el.offsetHeight)
             }))
         """)
-        log.info(f"Visible input fields in sign-in state: {[f for f in fields if f['visible']]}")
+        log.info(f"Visible input fields after clicking sign-in link: {[f for f in fields if f['visible']]}")
 
         # Try common Tyler login field id/name patterns.
         email_filled = False
