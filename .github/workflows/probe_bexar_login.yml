@@ -1,0 +1,31 @@
+name: Probe Bexar Login + Search
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+      - name: Install Playwright Chromium
+        run: playwright install --with-deps chromium
+      - name: Run probe
+        env:
+          ACCOUNT_EMAIL: ${{ secrets.PORTAL_ACCOUNT_EMAIL }}
+          ACCOUNT_PASSWORD: ${{ secrets.PORTAL_ACCOUNT_PASSWORD }}
+        run: python probe_bexar_login.py
+      - name: Upload probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bexar-login-probe-output
+          path: probe_artifacts/
+          if-no-files-found: warn
