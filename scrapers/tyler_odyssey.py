@@ -136,27 +136,6 @@ from .base import BaseScraper, launch_chromium, is_estate_case
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
 
-_DATE_RE = re.compile(r'(\d{1,2}/\d{1,2}/\d{4})')
-
-
-def _extract_filed_date(row: Dict) -> str:
-    """Denton's grid header for this column is literally "Filed / Location /
-    Judicial Officer" -- one combined column, not three -- so
-    _HEADER_ALIASES matches it to 'location' (which the alias list expects
-    to hold just a court name) rather than 'filed_date' (whose aliases are
-    all two/three-word "file date" phrases that don't appear as a
-    substring of the real header). Confirmed live: the cell's actual text
-    is date + location + judge run together, e.g. "8/24/2026 Probate Court
-    Judge ...". Pull the date back out of whichever field it landed in
-    rather than assuming the header aliases will ever cleanly separate it."""
-    for key in ('filed_date', 'location'):
-        m = _DATE_RE.search(row.get(key, '') or '')
-        if m:
-            mm, dd, yyyy = m.group(1).split('/')
-            return f"{int(mm):02d}/{int(dd):02d}/{yyyy}"
-    return ''
-
-
 # Case-type category checkbox ids -- confirmed NOT interactive on Denton
 # (present in the DOM but "not visible" to Playwright), kept here as a
 # best-effort no-op-safe attempt in case another county renders them for real.
@@ -530,14 +509,14 @@ class TylerOdysseyScraper(BaseScraper):
                                       f"(case {case_number!r}, style={row.get('style')!r}) -- skipping.")
                     continue
 
-                executor_name, executor_address = self._fetch_party_info(page, row)
+                executor_name, executor_address, filed_date = self._fetch_party_info(page, row)
 
                 records.append(self.build_record(
                     decedent_first_name=first,
                     decedent_last_name=last,
                     case_number=case_number,
                     case_type=case_type,
-                    filing_date=_extract_filed_date(row),
+                    filing_date=filed_date,
                     executor_name=executor_name,
                     executor_address=executor_address,
                 ))
@@ -592,14 +571,6 @@ class TylerOdysseyScraper(BaseScraper):
         data_trs = target.find_all('tr')
         if header_row_is_td:
             data_trs = data_trs[1:]  # first row was consumed as the header
-        # TEMP DIAGNOSTIC: filing_date has come back blank on every real
-        # record across two live runs despite two different hypotheses --
-        # dump the actual raw headers + one real row's raw cells rather
-        # than guess a third time.
-        self.logger.info(f"DIAG raw_headers={raw_headers!r}")
-        if data_trs:
-            first_cells_diag = [td.get_text(' ', strip=True) for td in data_trs[0].find_all('td')]
-            self.logger.info(f"DIAG first_row_cells={first_cells_diag!r}")
         for tr in data_trs:
             tds = tr.find_all('td')
             if not tds:
@@ -681,10 +652,11 @@ class TylerOdysseyScraper(BaseScraper):
             last = f"{last} {suffix}"
         return first, last
 
-    def _fetch_party_info(self, page, row: Dict) -> Tuple[str, str]:
+    def _fetch_party_info(self, page, row: Dict) -> Tuple[str, str, str]:
         """Open the case detail page (if we have a link) and look for the
         executor/administrator/applicant's name + mailing address in the
-        Party section. Always returns to the results page afterward.
+        Party section, plus the filed date. Always returns to the results
+        page afterward.
 
         Verified against a real Denton batch: `page.inner_text('body')`
         renders adjacent table cells joined by tab characters WITHOUT a
@@ -694,16 +666,30 @@ class TylerOdysseyScraper(BaseScraper):
         "Taylor, Richard Scott\\t\\t\\tJack T. Gannon" (applicant name +
         attorney name from two different cells) as one garbled "name".
         Fixed by excluding tabs from the captured class so a match stops at
-        the real cell boundary, not just the row's newline."""
+        the real cell boundary, not just the row's newline.
+
+        Filed date: the results GRID has no dedicated date column at all
+        (confirmed live -- only 4 raw headers exist: case number / style /
+        "filed/location/judicial officer" / type/status, and that combined
+        column's real per-row text never contains a date pattern across a
+        129-record sample). Pull it from this same detail-page fetch
+        instead (a "Filed:" label is standard on Odyssey case-detail
+        pages), rather than a second page visit."""
         href = row.get('link_href', '')
         if not href:
-            return '', ''
+            return '', '', ''
         results_url = page.url
         try:
             full = href if href.startswith('http') else self.base_url + href.lstrip('/')
             page.goto(full, wait_until='networkidle', timeout=20_000)
             page.wait_for_timeout(800)
             text = page.inner_text('body')
+
+            filed_date = ''
+            fm = re.search(r'Filed[:\s]+(\d{1,2}/\d{1,2}/\d{4})', text, re.I)
+            if fm:
+                mm, dd, yyyy = fm.group(1).split('/')
+                filed_date = f"{int(mm):02d}/{int(dd):02d}/{yyyy}"
 
             name, address = '', ''
             for label in _EXECUTOR_LABEL_PATTERNS:
@@ -725,11 +711,14 @@ class TylerOdysseyScraper(BaseScraper):
                                   f"executor/administrator/applicant name pattern matched on "
                                   f"detail page (this parser is UNVERIFIED -- see module "
                                   f"docstring; needs a real sample to tune).")
-            return name, address
+            if not filed_date:
+                self.logger.info(f"{self.county}: case {row.get('case_number')!r} -- no "
+                                  f"'Filed:' date pattern matched on detail page.")
+            return name, address, filed_date
         except Exception as e:
             self.logger.warning(f"{self.county}: could not fetch/parse case detail for "
                                  f"{row.get('case_number')!r}: {str(e)[:150]}")
-            return '', ''
+            return '', '', ''
         finally:
             try:
                 page.goto(results_url, wait_until='networkidle', timeout=20_000)
