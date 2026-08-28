@@ -136,6 +136,27 @@ from .base import BaseScraper, launch_chromium, is_estate_case
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
 
+_DATE_RE = re.compile(r'(\d{1,2}/\d{1,2}/\d{4})')
+
+
+def _extract_filed_date(row: Dict) -> str:
+    """Denton's grid header for this column is literally "Filed / Location /
+    Judicial Officer" -- one combined column, not three -- so
+    _HEADER_ALIASES matches it to 'location' (which the alias list expects
+    to hold just a court name) rather than 'filed_date' (whose aliases are
+    all two/three-word "file date" phrases that don't appear as a
+    substring of the real header). Confirmed live: the cell's actual text
+    is date + location + judge run together, e.g. "8/24/2026 Probate Court
+    Judge ...". Pull the date back out of whichever field it landed in
+    rather than assuming the header aliases will ever cleanly separate it."""
+    for key in ('filed_date', 'location'):
+        m = _DATE_RE.search(row.get(key, '') or '')
+        if m:
+            mm, dd, yyyy = m.group(1).split('/')
+            return f"{int(mm):02d}/{int(dd):02d}/{yyyy}"
+    return ''
+
+
 # Case-type category checkbox ids -- confirmed NOT interactive on Denton
 # (present in the DOM but "not visible" to Playwright), kept here as a
 # best-effort no-op-safe attempt in case another county renders them for real.
@@ -516,7 +537,7 @@ class TylerOdysseyScraper(BaseScraper):
                     decedent_last_name=last,
                     case_number=case_number,
                     case_type=case_type,
-                    filing_date=row.get('filed_date', ''),
+                    filing_date=_extract_filed_date(row),
                     executor_name=executor_name,
                     executor_address=executor_address,
                 ))
