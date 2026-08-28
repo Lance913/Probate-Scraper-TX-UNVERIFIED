@@ -30,7 +30,11 @@ jobs:
       - id: set
         run: |
           COUNTIES="${{ github.event.inputs.counties }}"
-          if [ -z "$COUNTIES" ]; then COUNTIES="collin dallas ellis bexar tarrant denton johnson harris travis"; fi
+          # Default matches what's actually wired into main.py's SCRAPER_MAP --
+          # keep in sync as counties land or get dropped (collin/dallas/bexar/
+          # tarrant/johnson are confirmed blocked by bot-verification walls,
+          # not attempting further; denton/travis are unfinished, not blocked).
+          if [ -z "$COUNTIES" ]; then COUNTIES="harris ellis"; fi
           ARR=$(echo "$COUNTIES" | tr ' ' '\n' | grep -v '^$' | jq -R . | jq -cs .)
           echo "matrix=$ARR" >> "$GITHUB_OUTPUT"
           echo "Matrix: $ARR"
