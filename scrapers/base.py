@@ -31,6 +31,11 @@ HEADERS = {
 NON_ESTATE_CASE_TYPE_KEYWORDS = [
     'GUARDIANSHIP', 'GUARDIAN OF', 'MENTAL HEALTH', 'MENTAL ILLNESS',
     'COMMITMENT', 'CHEMICALLY DEPENDENT', 'MINOR SETTLEMENT',
+    # Found live in a real Denton batch: "Section 1102 Investigations
+    # (Court Initiated)" -- a guardianship-adjacent court investigation
+    # (Texas Estates Code §1102), not a decedent estate matter, but didn't
+    # contain the word GUARDIANSHIP so slipped past the original list.
+    '1102 INVESTIGATION', 'INCAPACITATED PERSON',
 ]
 
 # Reference vocabulary of case types that DO indicate a decedent's estate —

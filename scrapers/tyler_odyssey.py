@@ -608,24 +608,48 @@ class TylerOdysseyScraper(BaseScraper):
 
     def _parse_style_name(self, style: str) -> Tuple[str, str]:
         """Odyssey case 'style' for a probate matter is commonly 'ESTATE OF
-        <NAME>' or 'IN THE ESTATE OF <NAME>, DECEASED' or just '<LAST, FIRST>'.
-        UNVERIFIED against a real value -- defensive best-effort parse."""
+        <NAME>' or 'IN THE ESTATE OF <NAME>, DECEASED'.
+
+        Verified against a real Denton batch (140 records): the ESTATE OF
+        pattern parses cleanly for genuine estate cases. Two real failure
+        modes found in that batch, both fixed here:
+          1. An A/K/A ("also known as") clause after the real name -- e.g.
+             "WILLIAM MURRAY TIPTON A/K/A WILLIAM M. TIPTON" was parsed as
+             one garbled name. Now stripped before splitting into parts.
+          2. Non-estate styles that don't contain "ESTATE OF" at all (e.g.
+             "AN ALLEGED INCAPACITATED PERSON IN RE: GUARDIANSHIP OF X") were
+             falling through to a blind parse_name() on the whole raw style
+             text, producing nonsense like first_name="An Alleged
+             Incapacitated Person". These case types should already be
+             excluded by is_estate_case() (base.py), but that's a keyword
+             safety net, not a hard guarantee -- as a second line of
+             defense, if the style doesn't match ESTATE OF at all, this now
+             returns ('', '') (dropped by main.py's _useful(), which
+             requires a decedent_last_name) instead of guessing a name from
+             unrelated text."""
         if not style:
             return '', ''
         s = style.strip()
         m = re.search(r'ESTATE OF\s+(.+?)(?:,?\s*DECEASED)?$', s, re.I)
-        if m:
-            name = m.group(1).strip()
-            return self.parse_name(name) if ',' not in name else self.parse_name_lf(name)
-        if ',' in s:
-            return self.parse_name_lf(s)
-        return self.parse_name(s)
+        if not m:
+            return '', ''
+        name = re.split(r'\s+A/?K/?A\b', m.group(1).strip(), flags=re.I)[0].strip()
+        return self.parse_name(name) if ',' not in name else self.parse_name_lf(name)
 
     def _fetch_party_info(self, page, row: Dict) -> Tuple[str, str]:
         """Open the case detail page (if we have a link) and look for the
         executor/administrator/applicant's name + mailing address in the
-        Party section. UNVERIFIED against a real detail page -- see module
-        docstring. Always returns to the results page afterward."""
+        Party section. Always returns to the results page afterward.
+
+        Verified against a real Denton batch: `page.inner_text('body')`
+        renders adjacent table cells joined by tab characters WITHOUT a
+        newline between them until the row actually ends -- the original
+        character class here included \\s (which matches tabs), so a match
+        ran straight through the next cell too, e.g. captured
+        "Taylor, Richard Scott\\t\\t\\tJack T. Gannon" (applicant name +
+        attorney name from two different cells) as one garbled "name".
+        Fixed by excluding tabs from the captured class so a match stops at
+        the real cell boundary, not just the row's newline."""
         href = row.get('link_href', '')
         if not href:
             return '', ''
@@ -639,7 +663,7 @@ class TylerOdysseyScraper(BaseScraper):
             name, address = '', ''
             for label in _EXECUTOR_LABEL_PATTERNS:
                 m = re.search(
-                    rf'{label}[:\s]+([A-Z][A-Za-z.,\'\-\s]+?)\n', text)
+                    rf'{label}[:\s]+([A-Z][A-Za-z.,\'\- ]+?)(?:\t|\n)', text)
                 if m:
                     name = m.group(1).strip().rstrip(',')
                     # Look for an address-shaped line shortly after the name.
