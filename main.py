@@ -30,8 +30,9 @@ from scrapers import (
     # Add each county's scraper class here as it's built, e.g.:
     # CollinCountyScraper,
     # BexarCountyScraper,
-    TarrantCountyScraper,
     DentonCountyScraper,
+    HarrisCountyScraper,
+    EllisCountyScraper,
 )
 import sheets_writer
 
@@ -44,19 +45,20 @@ logger = logging.getLogger('main')
 
 # Add each county's slug here as its scraper is completed and merged.
 ALL_COUNTIES = [
-    # 'collin', 'dallas', 'ellis', 'bexar', 'harris', 'travis',
-    'tarrant', 'denton',
-    # 'johnson' -- NOT wired in yet; the DistrictClerkPA/CountyClerkPA
-    # portal URL is still unresolved (connection-reset from GitHub Actions
-    # across multiple attempts). See scrapers/counties.py and the PR
-    # description for details.
+    # 'collin', 'dallas', 'bexar', 'tarrant', 'johnson', 'travis' -- confirmed
+    # blocked by AWS WAF "Human Verification" (collin/tarrant/johnson) or not
+    # yet started (dallas needs an authorized login path, travis unstarted).
+    'denton',
+    'harris',
+    'ellis',
 ]
 
 SCRAPER_MAP = {
     # 'collin': CollinCountyScraper,
     # 'bexar':  BexarCountyScraper,
-    'tarrant': TarrantCountyScraper,
     'denton':  DentonCountyScraper,
+    'harris': HarrisCountyScraper,
+    'ellis': EllisCountyScraper,
 }
 
 
@@ -130,16 +132,16 @@ def main():
     if args.from_json:
         records = [r for r in load_records(args.from_json) if _useful(r)]
         logger.info(f"Total records loaded: {len(records)}")
-        if not records:
-            logger.warning("No records to write.")
-            return
+        pull_date = (datetime.strptime(args.date, '%Y-%m-%d')
+                     if args.date else datetime.now()).strftime('%m/%d/%Y')
         if args.dry_run:
             logger.info("DRY RUN — not writing to Sheets")
             for r in records:
                 logger.info(r)
             return
-        pull_date = (datetime.strptime(args.date, '%Y-%m-%d')
-                     if args.date else datetime.now()).strftime('%m/%d/%Y')
+        # Update the tracker even when zero records came in — a day with
+        # genuinely no new leads should show as an explicit 0 row, not a
+        # silent gap that's indistinguishable from the job never having run.
         scanned_by_county = Counter(r.get('county', '') for r in records)
         new_records = sheets_writer.write_records(records, pull_date=pull_date)
         new_by_county = Counter(r.get('county', '') for r in new_records)

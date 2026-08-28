@@ -1,0 +1,49 @@
+name: Probe Harris Court Search Portal
+
+# push-triggered (not workflow_dispatch): workflow_dispatch requires the
+# workflow file to already be registered on the default branch before it can
+# be dispatched at all (a hard GitHub platform limitation, not a permissions
+# issue) -- but this repo intentionally has no branch-protection escape hatch
+# for pushing straight to main (other agents work this same repo concurrently
+# on their own branches; direct-to-main is reserved for the human-reviewed PR
+# merge, per SYSTEM_GUIDE.md Sec 2.3). A push trigger fires immediately on the
+# branch that introduces it, so probe iteration stays entirely on this
+# feature branch. Path-filtered so routine scraper commits on this branch
+# don't re-trigger it once the probe phase is done.
+on:
+  push:
+    branches: ['add-harris-probate-scraper']
+    paths:
+      - 'probe_harris.py'
+      - '.github/workflows/probe_harris.yml'
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          pip install playwright beautifulsoup4 lxml
+
+      - name: Install Playwright Chromium
+        run: playwright install --with-deps chromium
+
+      - name: Run probe
+        run: python probe_harris.py
+
+      - name: Upload probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-harris-output
+          path: probe_out/
+          if-no-files-found: warn
