@@ -610,9 +610,8 @@ class TylerOdysseyScraper(BaseScraper):
         """Odyssey case 'style' for a probate matter is commonly 'ESTATE OF
         <NAME>' or 'IN THE ESTATE OF <NAME>, DECEASED'.
 
-        Verified against a real Denton batch (140 records): the ESTATE OF
-        pattern parses cleanly for genuine estate cases. Two real failure
-        modes found in that batch, both fixed here:
+        Verified against a real Denton batch (140 records, iterated to 129
+        after fixes). Failure modes found and fixed here:
           1. An A/K/A ("also known as") clause after the real name -- e.g.
              "WILLIAM MURRAY TIPTON A/K/A WILLIAM M. TIPTON" was parsed as
              one garbled name. Now stripped before splitting into parts.
@@ -626,7 +625,14 @@ class TylerOdysseyScraper(BaseScraper):
              defense, if the style doesn't match ESTATE OF at all, this now
              returns ('', '') (dropped by main.py's _useful(), which
              requires a decedent_last_name) instead of guessing a name from
-             unrelated text."""
+             unrelated text.
+          3. A trailing generational suffix after a comma -- e.g. "RAYMOND
+             D. ROBERTS, SR" -- broke the "comma means LAST, FIRST" heuristic
+             (6/129 records in the same batch): the comma here separates a
+             FIRST-name-first name from its suffix, not last from first, so
+             it was wrongly routed through parse_name_lf() and came out as
+             first_name="Sr". Now stripped (and re-appended to the last
+             name) before the LAST,FIRST-vs-FIRST-LAST decision is made."""
         if not style:
             return '', ''
         s = style.strip()
@@ -634,7 +640,17 @@ class TylerOdysseyScraper(BaseScraper):
         if not m:
             return '', ''
         name = re.split(r'\s+A/?K/?A\b', m.group(1).strip(), flags=re.I)[0].strip()
-        return self.parse_name(name) if ',' not in name else self.parse_name_lf(name)
+
+        suffix = ''
+        sm = re.search(r',\s*(JR|SR|II|III|IV)\.?\s*$', name, re.I)
+        if sm:
+            suffix = sm.group(1).title()
+            name = name[:sm.start()].strip()
+
+        first, last = self.parse_name(name) if ',' not in name else self.parse_name_lf(name)
+        if suffix and last:
+            last = f"{last} {suffix}"
+        return first, last
 
     def _fetch_party_info(self, page, row: Dict) -> Tuple[str, str]:
         """Open the case detail page (if we have a link) and look for the
