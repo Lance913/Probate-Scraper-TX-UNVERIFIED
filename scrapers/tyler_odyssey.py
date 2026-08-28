@@ -592,6 +592,14 @@ class TylerOdysseyScraper(BaseScraper):
         data_trs = target.find_all('tr')
         if header_row_is_td:
             data_trs = data_trs[1:]  # first row was consumed as the header
+        # TEMP DIAGNOSTIC: filing_date has come back blank on every real
+        # record across two live runs despite two different hypotheses --
+        # dump the actual raw headers + one real row's raw cells rather
+        # than guess a third time.
+        self.logger.info(f"DIAG raw_headers={raw_headers!r}")
+        if data_trs:
+            first_cells_diag = [td.get_text(' ', strip=True) for td in data_trs[0].find_all('td')]
+            self.logger.info(f"DIAG first_row_cells={first_cells_diag!r}")
         for tr in data_trs:
             tds = tr.find_all('td')
             if not tds:
