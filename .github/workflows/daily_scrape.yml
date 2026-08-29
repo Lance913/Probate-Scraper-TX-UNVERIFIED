@@ -34,7 +34,7 @@ jobs:
           # keep in sync as counties land or get dropped (collin/dallas/bexar/
           # tarrant/johnson are confirmed blocked by bot-verification walls,
           # not attempting further; denton/travis are unfinished, not blocked).
-          if [ -z "$COUNTIES" ]; then COUNTIES="harris ellis"; fi
+          if [ -z "$COUNTIES" ]; then COUNTIES="harris ellis denton"; fi
           ARR=$(echo "$COUNTIES" | tr ' ' '\n' | grep -v '^$' | jq -R . | jq -cs .)
           echo "matrix=$ARR" >> "$GITHUB_OUTPUT"
           echo "Matrix: $ARR"
