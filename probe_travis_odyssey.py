@@ -70,18 +70,40 @@ def main():
         dump_body_text(page, 'landing')
         log.info(f"reCAPTCHA visible: {recaptcha_visible(page)}")
 
-        # Try to reach Smart Search directly.
+        # Try to reach Smart Search -- 'Smart Search' text matched the card
+        # description (didn't navigate) in v1. Try real clickable elements
+        # (links/buttons) specifically instead of any text match.
+        clicked = False
+        for sel in ['a:has-text("Smart Search")', 'button:has-text("Smart Search")',
+                    '[href*="SmartSearch" i]', '[href*="Search" i]']:
+            try:
+                loc = page.locator(sel).first
+                if loc.count() > 0 and loc.is_visible():
+                    log.info(f"Clicking Smart Search via {sel!r}")
+                    loc.click(timeout=8000)
+                    clicked = True
+                    break
+            except Exception:
+                continue
+        page.wait_for_timeout(2000)
         try:
-            loc = page.get_by_text('Smart Search', exact=False)
-            if loc.count() > 0 and loc.first.is_visible():
-                loc.first.click(timeout=8000)
-                page.wait_for_timeout(2000)
-                log.info(f"After Smart Search click: url={page.url!r} title={page.title()!r}")
-                shot(page, '02_smart_search')
-                dump_body_text(page, 'smart_search')
-                log.info(f"reCAPTCHA visible on Smart Search: {recaptcha_visible(page)}")
-        except Exception as e:
-            log.warning(f"Smart Search click failed: {str(e)[:200]}")
+            page.wait_for_load_state('networkidle', timeout=10000)
+        except Exception:
+            pass
+        log.info(f"After Smart Search click (clicked={clicked}): url={page.url!r} title={page.title()!r}")
+        shot(page, '02_smart_search')
+        dump_body_text(page, 'smart_search')
+        log.info(f"reCAPTCHA visible on Smart Search: {recaptcha_visible(page)}")
+
+        # Dump the search form's real fields so a real search can be built
+        # next iteration without guessing.
+        fields = page.evaluate("""
+            () => Array.from(document.querySelectorAll('input, select')).map(el => ({
+                tag: el.tagName, type: el.type||'', id: el.id||'', name: el.name||'',
+                visible: !!(el.offsetWidth || el.offsetHeight)
+            })).filter(f => f.visible)
+        """)
+        log.info(f"Visible form fields on Smart Search page: {fields}")
 
         browser.close()
 
