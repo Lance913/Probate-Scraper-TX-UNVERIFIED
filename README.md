@@ -12,10 +12,15 @@ architecture, GitHub Actions patterns, and lessons apply directly here).
 
 | County  | Probate portal (as of scaffold time — verify via probe) |
 |---------|-----------------------------------------------------------|
-| Bexar   | portal-txbexar.tylertech.cloud |
-| Collin  | cijspub.co.collin.tx.us/PublicAccess (Tyler Odyssey) |
-| Harris  | cclerk.hctx.net/applications/websearch/CourtSearch.aspx?CaseType=Probate (standalone Harris County Clerk ASP.NET case-search system — same domain as the existing foreclosure scraper, but a different, custom application, not Tyler/Odyssey) |
-| Dallas, Ellis, Tarrant, Denton, Johnson, Travis | not yet identified — needs discovery (SYSTEM_GUIDE.md §7 step 1) before probing |
+| Tarrant | Same tylertech.cloud family as Collin (cijspub.co.collin.tx.us/PublicAccess) — every search entry point is gated by an AWS WAF "Human Verification" wall from GitHub Actions IPs. Confirmed blocked; not pursuing further (no CAPTCHA bypass). |
+| Johnson | portal-txjohnson.tylertech.cloud/PublicAccess — same AWS WAF wall as Tarrant/Collin, confirmed blocked. |
+| Denton  | justice1.dentoncounty.gov/PublicAccess (classic Tyler Odyssey Public Access, self-hosted, no WAF) — confirmed and wired in, results verified live. |
+| Harris  | cclerk.hctx.net/applications/websearch/CourtSearch.aspx?CaseType=Probate (standalone Harris County Clerk ASP.NET case-search system, not Tyler/Odyssey) — confirmed and wired in, live. |
+| Ellis   | LGS Online Solutions (public.lgsonlinesolutions.com) — confirmed and wired in, live. |
+| Bexar   | portal-txbexar.tylertech.cloud — reCAPTCHA checkbox directly on the search form (not just registration); confirmed blocked, not pursuing further. |
+| Dallas  | courtsportal.dallascounty.org — login redirects to a separate Tyler identity-provider page with its own "confirm you are human" wall before credentials can even be entered; confirmed blocked, not pursuing further. |
+| Collin  | cijspub.co.collin.tx.us/PublicAccess (Tyler Odyssey, now tylertech.cloud-hosted) — same AWS WAF wall as Tarrant/Johnson, confirmed blocked. |
+| Travis  | not yet identified / not started. |
 
 **Fields captured:** Decedent First Name · Decedent Last Name · Property
 Address (best-effort — often unavailable; a probate case index is

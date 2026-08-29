@@ -6,6 +6,7 @@ venv/
 .DS_Store
 records-*.json
 artifacts/
+probe_out/
 *.env
 credentials*.json
 service-account*.json

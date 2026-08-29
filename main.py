@@ -30,6 +30,7 @@ from scrapers import (
     # Add each county's scraper class here as it's built, e.g.:
     # CollinCountyScraper,
     # BexarCountyScraper,
+    DentonCountyScraper,
     HarrisCountyScraper,
     EllisCountyScraper,
 )
@@ -44,7 +45,10 @@ logger = logging.getLogger('main')
 
 # Add each county's slug here as its scraper is completed and merged.
 ALL_COUNTIES = [
-    # 'collin', 'dallas', 'bexar', 'tarrant', 'denton', 'johnson', 'travis',
+    # 'collin', 'dallas', 'bexar', 'tarrant', 'johnson', 'travis' -- confirmed
+    # blocked by AWS WAF "Human Verification" (collin/tarrant/johnson) or not
+    # yet started (dallas needs an authorized login path, travis unstarted).
+    'denton',
     'harris',
     'ellis',
 ]
@@ -52,6 +56,7 @@ ALL_COUNTIES = [
 SCRAPER_MAP = {
     # 'collin': CollinCountyScraper,
     # 'bexar':  BexarCountyScraper,
+    'denton':  DentonCountyScraper,
     'harris': HarrisCountyScraper,
     'ellis': EllisCountyScraper,
 }
